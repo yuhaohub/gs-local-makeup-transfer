@@ -21,6 +21,8 @@ docs/                只放一份交付文档
 configs/ scripts/ results/
 ```
 
+`makeup/` 目前只放接口骨架（`mask` / `residual` / `naturalness`）：声明 \(M\)、\(\mathrm{supp}(\delta)\subseteq M\)、\(\|\delta\|_\infty\le\varepsilon\) 与 \(\mathcal{L}_{\mathrm{nat}}\)，计算均 `NotImplementedError`。
+
 ## 接入 AEGIS（底座）
 ```bash
 git submodule add https://github.com/Woleek/AEGIS.git third_party/AEGIS
