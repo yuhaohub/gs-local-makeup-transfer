@@ -1,17 +1,21 @@
 """Hooks for the naturalness term ``L_nat`` (palette, smoothness, LPIPS).
 
-Placeholders only. No perceptual network is loaded and no loss is computed.
+``smooth`` is a masked spatial total variation on ``H×W×3`` residuals.
+``palette`` and ``lpips`` are not implemented. ``__call__`` returns only
+``smooth``. NumPy is a soft import; see ``makeup/README.md``. No perceptual
+network is loaded.
 """
 
 from __future__ import annotations
 
 from typing import Optional
 
-from makeup.mask import ArrayLike
+from makeup._numpy import require_numpy
+from makeup.mask import ArrayLike, as_mask_array
 
 
 class NaturalnessLoss:
-    """Names the three ``L_nat`` terms. Calling any of them is unimplemented."""
+    """``L_nat`` hooks. Only the smoothness term is computed."""
 
     def palette(
         self,
@@ -36,20 +40,41 @@ class NaturalnessLoss:
         raise NotImplementedError("NaturalnessLoss.palette is not implemented")
 
     def smooth(self, delta: ArrayLike, mask: ArrayLike) -> float:
-        """Smoothness term: spatial variation of ``δ`` inside ``M``.
+        """Masked spatial total variation of an ``H×W×3`` residual.
+
+        The residual is multiplied by ``M`` (clipped to ``[0, 1]``), then
+        absolute forward differences are summed over horizontal edges,
+        vertical edges, and the three channels:
+
+            Σ |Δ_h (δ ⊙ M)| + Σ |Δ_v (δ ⊙ M)|
+
+        Variation on pixels where ``M`` is 0 does not contribute. A single
+        pixel has no edges and scores 0.
 
         Args:
-            delta: residual, shape ``(H, W, 3)`` or ``(N, 3)``.
-            mask: semantic mask ``M``.
+            delta: residual, shape ``(H, W, 3)``.
+            mask: ``M`` as ``(H, W)``, ``(H, W, 1)``, ``(H, W, 3)``, or a
+                ``SemanticMask`` (its union).
 
         Returns:
-            A scalar loss.
+            A non-negative scalar.
 
         Raises:
-            NotImplementedError: the smoothness term is not implemented.
+            ValueError: ``delta`` is not ``H×W×3``, or ``mask`` does not match.
+            ImportError: NumPy is not installed.
         """
-        del delta, mask
-        raise NotImplementedError("NaturalnessLoss.smooth is not implemented")
+        np = require_numpy()
+        values = np.asarray(delta, dtype=float)
+        if values.ndim != 3 or values.shape[-1] != 3:
+            raise ValueError(f"smooth expects an HxWx3 residual, got shape {values.shape}")
+        spatial = _spatial_mask(as_mask_array(mask), values.shape)
+        masked = values * spatial[..., None]
+        total = 0.0
+        if values.shape[1] >= 2:
+            total += float(np.abs(masked[:, 1:, :] - masked[:, :-1, :]).sum())
+        if values.shape[0] >= 2:
+            total += float(np.abs(masked[1:, :, :] - masked[:-1, :, :]).sum())
+        return total
 
     def lpips(
         self,
@@ -83,25 +108,40 @@ class NaturalnessLoss:
         mask: ArrayLike,
         reference: Optional[ArrayLike] = None,
     ) -> float:
-        """``L_nat`` as the combination of palette, smoothness, and LPIPS.
+        """Return only the smoothness term.
 
-        Relative weights are not fixed in this stub.
+        Palette and LPIPS stay unimplemented and are not added.
+        ``edited``, ``original``, and ``reference`` are accepted to keep the
+        hook signature and are ignored.
 
         Args:
-            edited: edited RGB image ``(H, W, 3)``.
-            original: original RGB image, same shape.
-            delta: residual inside ``M``.
+            edited: unused RGB image.
+            original: unused RGB image.
+            delta: residual inside ``M``, shape ``(H, W, 3)``.
             mask: semantic mask ``M``.
-            reference: optional palette passed to the palette term.
+            reference: unused palette.
 
         Returns:
-            A scalar loss.
-
-        Raises:
-            NotImplementedError: ``L_nat`` is not implemented.
+            The scalar from ``smooth``.
         """
-        del edited, original, delta, mask, reference
-        raise NotImplementedError("NaturalnessLoss is not implemented")
+        del edited, original, reference
+        return self.smooth(delta, mask)
+
+
+def _spatial_mask(mask: ArrayLike, residual_shape: tuple) -> ArrayLike:
+    """Reduce ``mask`` to ``(H, W)`` matching ``residual_shape[:2]``."""
+    np = require_numpy()
+    spatial = np.clip(np.asarray(mask, dtype=float), 0.0, 1.0)
+    height, width = residual_shape[:2]
+    if spatial.shape == (height, width):
+        return spatial
+    if spatial.shape == residual_shape:
+        return np.max(spatial, axis=-1)
+    if spatial.shape == (height, width, 1):
+        return spatial[..., 0]
+    raise ValueError(
+        f"mask shape {spatial.shape} does not match residual spatial shape {(height, width)}"
+    )
 
 
 def palette_loss(
@@ -118,11 +158,7 @@ def palette_loss(
 
 
 def smoothness_loss(delta: ArrayLike, mask: ArrayLike) -> float:
-    """Smoothness hook. See ``NaturalnessLoss.smooth``.
-
-    Raises:
-        NotImplementedError: always.
-    """
+    """Smoothness hook. See ``NaturalnessLoss.smooth``."""
     return NaturalnessLoss().smooth(delta, mask)
 
 
@@ -146,9 +182,5 @@ def naturalness_loss(
     mask: ArrayLike,
     reference: Optional[ArrayLike] = None,
 ) -> float:
-    """``L_nat`` hook. See ``NaturalnessLoss.__call__``.
-
-    Raises:
-        NotImplementedError: always.
-    """
+    """``L_nat`` hook. Currently equal to ``smoothness_loss`` on ``delta`` and ``mask``."""
     return NaturalnessLoss()(edited, original, delta, mask, reference)

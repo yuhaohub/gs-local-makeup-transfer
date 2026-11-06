@@ -21,7 +21,7 @@ docs/                只放一份交付文档
 configs/ scripts/ results/
 ```
 
-`makeup/` 目前只放接口骨架（`mask` / `residual` / `naturalness`）：声明 \(M\)、\(\mathrm{supp}(\delta)\subseteq M\)、\(\|\delta\|_\infty\le\varepsilon\) 与 \(\mathcal{L}_{\mathrm{nat}}\)，计算均 `NotImplementedError`。
+`makeup/` 用 NumPy 实现语义 mask 的 union/support、残差投影（\(\mathrm{supp}(\delta)\subseteq M\)、\(\|\delta\|_\infty\le\varepsilon\)）与平滑项；`from_parsing`、调色板与 LPIPS 仍未实现（见 `makeup/README.md`）。
 
 ## 接入 AEGIS（底座）
 ```bash

@@ -1,12 +1,16 @@
 """Semantic makeup mask ``M`` over lip, eye, brow, and cheek.
 
-Interface only. Face parsing is not implemented.
+``region``, ``union``, and ``support`` run with NumPy when ``regions`` is
+populated. ``from_parsing`` is not implemented. NumPy is a soft import;
+see ``makeup/README.md``.
 """
 
 from __future__ import annotations
 
 from enum import Enum
 from typing import Mapping, Optional, Tuple
+
+from makeup._numpy import require_numpy
 
 # Numeric map. Image domain is (H, W); Gaussian domain is (N,).
 ArrayLike = object
@@ -32,23 +36,27 @@ REGIONS: Tuple[MakeupRegion, ...] = (
 class SemanticMask:
     """Spatial mask ``M`` on an image grid or on per-Gaussian indices.
 
-    Values are intended to lie in ``[0, 1]`` (hard or soft). The union of
-    the four regions is the support a residual may occupy.
+    Values are intended to lie in ``[0, 1]`` (hard or soft). ``union`` is the
+    elementwise maximum of the stored maps, clipped to ``[0, 1]``.
     """
 
     def __init__(
         self,
         regions: Optional[Mapping[MakeupRegion, ArrayLike]] = None,
     ) -> None:
-        """Hold per-region maps. No alignment or thresholding is applied.
+        """Hold per-region maps. Keys are normalized to ``MakeupRegion``.
 
         Args:
             regions: region name to a spatial map, shape ``(H, W)`` or ``(N,)``.
-                ``None`` stores an empty mapping.
+                ``None`` stores an empty mapping. Arrays are not copied here.
 
-        TODO: check that every region shares one grid and that values lie in ``[0, 1]``.
+        TODO: check that values lie in ``[0, 1]`` before ``union`` clips them.
         """
-        self.regions = dict(regions) if regions is not None else {}
+        normalized = {}
+        if regions:
+            for key, value in regions.items():
+                normalized[MakeupRegion(key)] = value
+        self.regions = normalized
 
     @classmethod
     def from_parsing(
@@ -75,30 +83,77 @@ class SemanticMask:
         raise NotImplementedError("SemanticMask.from_parsing is not implemented")
 
     def region(self, name: MakeupRegion) -> ArrayLike:
-        """Return the map for one region, same spatial shape as ``M``.
+        """Return a float copy of one region map.
+
+        Args:
+            name: ``MakeupRegion`` or its string value (``"lip"``, ``"eye"``,
+                ``"brow"``, ``"cheek"``).
+
+        Returns:
+            Float array, same shape as the stored map. Not clipped.
 
         Raises:
-            NotImplementedError: region lookup is not implemented.
+            KeyError: that region was not provided.
+            ImportError: NumPy is not installed.
         """
-        del name
-        raise NotImplementedError("SemanticMask.region is not implemented")
+        np = require_numpy()
+        key = name if isinstance(name, MakeupRegion) else MakeupRegion(name)
+        if key not in self.regions:
+            raise KeyError(key.value)
+        return np.array(self.regions[key], dtype=float, copy=True)
 
     def union(self) -> ArrayLike:
-        """Return ``M``, the soft union of lip, eye, brow, and cheek.
+        """Return ``M``, the elementwise max of stored regions, clipped to ``[0, 1]``.
+
+        Missing regions are skipped. Every stored map must share one shape.
+
+        Returns:
+            Float array. Overlaps keep the larger weight. Values above 1 or
+            below 0 are clipped.
 
         Raises:
-            NotImplementedError: the union is not implemented.
+            ValueError: ``regions`` is empty, or shapes disagree.
+            ImportError: NumPy is not installed.
         """
-        raise NotImplementedError("SemanticMask.union is not implemented")
+        np = require_numpy()
+        if not self.regions:
+            raise ValueError("SemanticMask.regions is empty")
+        merged = None
+        shape = None
+        for name, value in self.regions.items():
+            arr = np.asarray(value, dtype=float)
+            if shape is None:
+                shape = arr.shape
+            elif arr.shape != shape:
+                raise ValueError(
+                    f"region {name.value} has shape {arr.shape}, expected {shape}"
+                )
+            merged = arr if merged is None else np.maximum(merged, arr)
+        return np.clip(merged, 0.0, 1.0)
 
     def support(self, threshold: float = 0.0) -> ArrayLike:
-        """Return the boolean support of ``M`` (entries strictly above ``threshold``).
+        """Return the boolean support of ``M`` (``union > threshold``).
+
+        Args:
+            threshold: cutoff. Default ``0`` marks every strictly positive weight.
+
+        Returns:
+            Boolean array, same shape as ``union``.
 
         Raises:
-            NotImplementedError: support extraction is not implemented.
+            ValueError: ``regions`` is empty.
+            ImportError: NumPy is not installed.
         """
-        del threshold
-        raise NotImplementedError("SemanticMask.support is not implemented")
+        np = require_numpy()
+        return np.asarray(self.union()) > threshold
+
+
+def as_mask_array(mask: ArrayLike) -> ArrayLike:
+    """Return ``M`` as a float array. A ``SemanticMask`` contributes its union."""
+    np = require_numpy()
+    if isinstance(mask, SemanticMask):
+        return np.asarray(mask.union(), dtype=float)
+    return np.asarray(mask, dtype=float)
 
 
 def semantic_mask(
