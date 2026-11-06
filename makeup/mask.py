@@ -48,15 +48,62 @@ class SemanticMask:
 
         Args:
             regions: region name to a spatial map, shape ``(H, W)`` or ``(N,)``.
-                ``None`` stores an empty mapping. Arrays are not copied here.
-
-        TODO: check that values lie in ``[0, 1]`` before ``union`` clips them.
+                ``None`` stores an empty mapping. Arrays are not copied or
+                range-checked. Use ``from_regions`` for hand-built maps.
         """
         normalized = {}
         if regions:
             for key, value in regions.items():
                 normalized[MakeupRegion(key)] = value
         self.regions = normalized
+
+    @classmethod
+    def from_regions(
+        cls,
+        regions: Mapping[MakeupRegion, ArrayLike],
+        *,
+        clip: bool = True,
+    ) -> "SemanticMask":
+        """Build ``M`` from hand-built or precomputed region maps.
+
+        This is not face parsing. Every map must share one shape. Values are
+        soft-clipped to ``[0, 1]`` when ``clip`` is True. When ``clip`` is
+        False, a value outside ``[0, 1]`` raises ``ValueError``.
+
+        Args:
+            regions: region name to a spatial map. At least one entry.
+            clip: soft-clip into ``[0, 1]`` (default) or require that range.
+
+        Returns:
+            A ``SemanticMask`` whose stored maps are finite float arrays.
+
+        Raises:
+            ValueError: no maps, shapes differ, non-finite values, or (when
+                ``clip`` is False) a value outside ``[0, 1]``.
+            ImportError: NumPy is not installed.
+        """
+        np = require_numpy()
+        if not regions:
+            raise ValueError("from_regions requires at least one region map")
+        stored: dict = {}
+        shape = None
+        for key, value in regions.items():
+            name = key if isinstance(key, MakeupRegion) else MakeupRegion(key)
+            arr = np.array(value, dtype=float, copy=True)
+            if shape is None:
+                shape = arr.shape
+            elif arr.shape != shape:
+                raise ValueError(
+                    f"shape mismatch: region {name.value} has shape {arr.shape}, expected {shape}"
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(f"region {name.value} has non-finite values")
+            if clip:
+                arr = np.clip(arr, 0.0, 1.0)
+            elif np.any((arr < 0.0) | (arr > 1.0)):
+                raise ValueError(f"region {name.value} has values outside [0, 1]")
+            stored[name] = arr
+        return cls(stored)
 
     @classmethod
     def from_parsing(

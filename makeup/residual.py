@@ -55,19 +55,22 @@ class MakeupResidual:
 
         Args:
             delta: candidate residual, shape ``(H, W, 3)`` (RGB) or ``(N, 3)`` (DC).
-            mask: ``M`` broadcastable over the spatial axes, or a ``SemanticMask``
-                (its ``union``).
+            mask: ``M`` with the same shape as ``delta``, or a spatial map
+                ``delta.shape[:-1]`` (or that shape plus a singleton channel)
+                when the last axis has length 3. A ``SemanticMask`` uses its union.
 
         Returns:
             ``δ`` with the same shape as ``delta``.
 
         Raises:
-            ValueError: ``mask`` is not broadcastable to ``delta``.
+            ValueError: ``mask`` does not match ``delta`` (same shape, or a
+                spatial map whose shape is ``delta.shape[:-1]`` when the last
+                axis is the 3 color channels).
             ImportError: NumPy is not installed.
         """
         np = require_numpy()
         values = np.asarray(delta, dtype=float)
-        weight = _broadcast_weight(as_mask_array(mask), values.shape)
+        weight = _aligned_weight(as_mask_array(mask), values.shape)
         clipped = np.clip(values, -self.epsilon, self.epsilon)
         return clipped * weight
 
@@ -91,36 +94,51 @@ class MakeupResidual:
             Edited ``base``, same shape as ``base``.
 
         Raises:
-            ValueError: ``base`` and the projected residual differ in shape.
+            ValueError: ``base``, ``delta``, and ``mask`` disagree in shape.
             ImportError: NumPy is not installed.
         """
         np = require_numpy()
         base_arr = np.asarray(base, dtype=float)
-        projected = np.asarray(self.project(delta, mask), dtype=float)
-        if base_arr.shape != projected.shape:
+        delta_arr = np.asarray(delta, dtype=float)
+        mask_arr = np.asarray(as_mask_array(mask), dtype=float)
+        if base_arr.shape != delta_arr.shape or not _weight_matches(mask_arr.shape, delta_arr.shape):
             raise ValueError(
-                f"base shape {base_arr.shape} != projected residual shape {projected.shape}"
+                "shape mismatch: "
+                f"base {base_arr.shape}, delta {delta_arr.shape}, mask {mask_arr.shape}"
             )
+        projected = np.asarray(self.project(delta_arr, mask_arr), dtype=float)
         edited = base_arr + projected
         if clip_rgb and self.kind is ResidualKind.RGB:
             edited = np.clip(edited, 0.0, 1.0)
         return edited
 
 
-def _broadcast_weight(mask: ArrayLike, shape: tuple) -> ArrayLike:
-    """Clip ``mask`` to ``[0, 1]`` and broadcast it to ``shape``."""
+def _weight_matches(mask_shape: tuple, residual_shape: tuple) -> bool:
+    """True when ``mask_shape`` is the residual or its spatial grid.
+
+    A spatial map is accepted only for a trailing color axis of length 3,
+    as ``(H, W)`` against ``(H, W, 3)`` or ``(N,)`` against ``(N, 3)``.
+    A singleton channel ``(..., 1)`` is accepted on that same grid.
+    Other shapes, including ones NumPy could broadcast, are mismatches.
+    """
+    if mask_shape == residual_shape:
+        return True
+    if not residual_shape or residual_shape[-1] != 3:
+        return False
+    spatial = residual_shape[:-1]
+    return mask_shape == spatial or mask_shape == spatial + (1,)
+
+
+def _aligned_weight(mask: ArrayLike, shape: tuple) -> ArrayLike:
+    """Clip ``mask`` to ``[0, 1]`` and align a spatial map onto ``shape``."""
     np = require_numpy()
-    weight = np.clip(np.asarray(mask, dtype=float), 0.0, 1.0)
-    if weight.shape == shape:
+    weight = np.asarray(mask, dtype=float)
+    if not _weight_matches(weight.shape, shape):
+        raise ValueError(f"shape mismatch: delta {shape}, mask {weight.shape}")
+    weight = np.clip(weight, 0.0, 1.0)
+    if weight.shape == shape or weight.shape == shape[:-1] + (1,):
         return weight
-    if weight.ndim + 1 == len(shape) and shape[:-1] == weight.shape:
-        return weight.reshape(weight.shape + (1,))
-    try:
-        return np.broadcast_to(weight, shape)
-    except ValueError as exc:
-        raise ValueError(
-            f"mask shape {weight.shape} is not broadcastable to residual shape {shape}"
-        ) from exc
+    return weight.reshape(weight.shape + (1,))
 
 
 def project_residual(
