@@ -1,8 +1,28 @@
 {
   "experiment_id": "B0",
   "desc": "AEGIS original de-identification",
-  "status": "bootstrap_required",
-  "bootstrapped": false,
-  "metrics": {},
-  "note": "third_party/AEGIS is missing. Run scripts/00_bootstrap_aegis.sh, then wire the TODOs in src/baselines/b0_aegis_reproduce.py."
+  "status": "deps_missing",
+  "bootstrapped": true,
+  "metrics": {
+    "command": "make mask_avatar",
+    "command_attempted": false,
+    "return_code": null,
+    "log_tail": "",
+    "cuda_available": false,
+    "makefile": "third_party/AEGIS/makefile",
+    "mask_script": "third_party/AEGIS/scripts/mask_avatar.py",
+    "embedder": "adaface",
+    "avatar_dir": "third_party/AEGIS/datasets/FaceScapeReconst/avatars/527",
+    "target_image": "third_party/AEGIS/datasets/FaceScapeReconst/renders/527.png",
+    "blockers": [
+      "deps_missing: uv is not on PATH (mask_avatar recipe starts with uv run)",
+      "deps_missing: recipe avatar input missing (third_party/AEGIS/datasets/FaceScapeReconst/avatars/527/point_cloud.ply)",
+      "deps_missing: recipe target image missing (third_party/AEGIS/datasets/FaceScapeReconst/renders/527.png)",
+      "deps_missing: embedder checkpoint missing (third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt); not downloaded",
+      "deps_missing: insightface detector missing (~/.insightface/models/buffalo_l/det_10g.onnx); running mask_avatar would auto-download it",
+      "deps_missing: GaussianAvatars checkout missing (third_party/AEGIS/GaussianAvatars)",
+      "gpu_required: CUDA device not available"
+    ]
+  },
+  "note": "B0 AEGIS original de-identification (§6.2 item 1) did not launch `make mask_avatar` (deps_missing). uv is not on PATH (mask_avatar recipe starts with uv run); recipe avatar input missing (third_party/AEGIS/datasets/FaceScapeReconst/avatars/527/point_cloud.ply); recipe target image missing (third_party/AEGIS/datasets/FaceScapeReconst/renders/527.png); embedder checkpoint missing (third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt); not downloaded; insightface detector missing (~/.insightface/models/buffalo_l/det_10g.onnx); running mask_avatar would auto-download it; GaussianAvatars checkout missing (third_party/AEGIS/GaussianAvatars); CUDA device not available. Eval targets were not run. No weights or datasets were downloaded. Bootstrap clone includes datasets/NeRSembleReconst avatar 306, used by other makefile targets; B0 stays on make mask_avatar."
 }
