@@ -1,0 +1,20 @@
+# 与交付文档实验矩阵对齐；实现时按 ID 扩展命令
+baselines:
+  B0: {desc: "AEGIS original de-identification"}
+  B1: {desc: "AEGIS interface + targeted impersonation (full face)"}
+  B2: {desc: "B1 + makeup semantic mask + amplitude constraint"}
+method:
+  M: {desc: "B2 + DPA proxies + preprocess-invariant transforms"}
+ablations:
+  A1: {desc: "M without DPA"}
+  A2: {desc: "M without preprocess family A"}
+  A3: {desc: "M + L_univ"}
+comparisons:
+  C1: {desc: "Midterm best RGB+API-EoT+id-direction"}
+  C2: {desc: "DiffAM / Adv-Makeup protocol reference"}
+  C3: {desc: "3DAO task reference when fulltext available"}
+metrics: ["mean_delta", "ASR", "naturalness_LPIPS", "cross_preprocess_ASR"]
+api_eval:
+  fixed_queries: true
+  report_mean_std: true
+  note: "阈值与服务商在运行配置中锁定，禁止口头改协议"
