@@ -12,9 +12,20 @@ if str(_ROOT) not in sys.path:
 
 import numpy as np
 
-from makeup.mask import MakeupRegion, SemanticMask, semantic_mask
+import makeup
+from makeup import (
+    REGIONS,
+    MakeupRegion,
+    SemanticMask,
+    apply_residual,
+    lpips_loss,
+    palette_loss,
+    project_residual,
+    semantic_mask,
+    smoothness_loss,
+)
 from makeup.naturalness import NaturalnessLoss
-from makeup.residual import MakeupResidual, apply_residual, project_residual
+from makeup.residual import MakeupResidual
 
 
 class MakeupSmokeTest(unittest.TestCase):
@@ -80,6 +91,84 @@ class MakeupSmokeTest(unittest.TestCase):
         self.assertEqual(loss.smooth(outside, mask), 0.0)
         self.assertGreater(loss.smooth(inside, mask), 0.0)
         self.assertEqual(loss(None, None, inside, mask), loss.smooth(inside, mask))
+
+    def test_public_exports_include_helpers_and_loss_hooks(self) -> None:
+        expected = {
+            "REGIONS",
+            "apply_residual",
+            "palette_loss",
+            "smoothness_loss",
+            "lpips_loss",
+        }
+        self.assertTrue(expected <= set(makeup.__all__))
+        self.assertEqual(
+            tuple(REGIONS),
+            (MakeupRegion.LIP, MakeupRegion.EYE, MakeupRegion.BROW, MakeupRegion.CHEEK),
+        )
+        with self.assertRaises(NotImplementedError):
+            palette_loss(np.zeros((2, 2, 3)), np.ones((2, 2)))
+        with self.assertRaises(NotImplementedError):
+            lpips_loss(np.zeros((2, 2, 3)), np.zeros((2, 2, 3)))
+        flat = np.zeros((2, 2, 3))
+        self.assertEqual(smoothness_loss(flat, np.ones((2, 2))), 0.0)
+
+    def test_from_regions_soft_clips_and_checks_shape(self) -> None:
+        brow = np.array([[-0.2, 0.3], [1.2, 0.0]])
+        mask = SemanticMask.from_regions({"brow": brow})
+        self.assertTrue(np.allclose(mask.region(MakeupRegion.BROW), [[0.0, 0.3], [1.0, 0.0]]))
+        self.assertTrue(mask.support()[0, 1])
+        self.assertFalse(mask.support()[0, 0])
+        self.assertFalse(mask.support(0.5)[0, 1])
+        with self.assertRaises(ValueError):
+            SemanticMask.from_regions({"brow": brow}, clip=False)
+        with self.assertRaises(ValueError):
+            SemanticMask.from_regions(
+                {"lip": np.ones((2, 2)), "eye": np.ones((2, 3))}
+            )
+
+    def test_soft_mask_support_scales_residual(self) -> None:
+        lip = np.zeros((3, 3))
+        lip[1, 1] = 0.4
+        mask = SemanticMask.from_regions({MakeupRegion.LIP: lip})
+        self.assertTrue(mask.support()[1, 1])
+        self.assertFalse(mask.support(0.5)[1, 1])
+        self.assertFalse(mask.support()[0, 0])
+        projected = project_residual(np.ones((3, 3, 3)), mask, 0.2)
+        self.assertTrue(np.allclose(projected[1, 1], 0.08))
+        self.assertTrue(np.all(projected[0, 0] == 0.0))
+        self.assertLessEqual(float(np.max(np.abs(projected))), 0.2)
+
+    def test_shape_mismatch_raises(self) -> None:
+        delta = np.ones((4, 5, 3))
+        with self.assertRaises(ValueError) as ctx:
+            project_residual(delta, np.ones((1, 1, 1)), 0.1)
+        self.assertIn("shape mismatch", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            apply_residual(np.ones((3, 5, 3)), delta, np.ones((4, 5)), 0.1)
+        self.assertIn("shape mismatch", str(ctx.exception))
+        message = str(ctx.exception)
+        self.assertIn(str((3, 5, 3)), message)
+        self.assertIn(str((4, 5, 3)), message)
+        self.assertIn(str((4, 5)), message)
+
+    def test_dc_sum_stays_unclipped_and_clip_rgb_false_keeps_overflow(self) -> None:
+        dc = apply_residual(
+            np.full((2, 3), 2.0),
+            np.ones((2, 3)),
+            np.ones((2,)),
+            0.5,
+            kind="dc",
+        )
+        self.assertTrue(np.allclose(dc, 2.5))
+        self.assertGreater(float(np.max(dc)), 1.0)
+        raw = apply_residual(
+            np.ones((2, 2, 3)),
+            np.ones((2, 2, 3)),
+            np.ones((2, 2)),
+            0.3,
+            clip_rgb=False,
+        )
+        self.assertTrue(np.allclose(raw, 1.3))
 
     def test_parsing_palette_and_lpips_stay_unimplemented(self) -> None:
         with self.assertRaises(NotImplementedError):
