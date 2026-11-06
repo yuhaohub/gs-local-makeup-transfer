@@ -1,0 +1,2 @@
+experiment_id,status,bootstrapped,note
+B0,bootstrap_required,false,"third_party/AEGIS is missing. Run scripts/00_bootstrap_aegis.sh, then wire the TODOs in src/baselines/b0_aegis_reproduce.py."

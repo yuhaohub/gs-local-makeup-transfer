@@ -1,0 +1,8 @@
+{
+  "experiment_id": "B0",
+  "desc": "AEGIS original de-identification",
+  "status": "bootstrap_required",
+  "bootstrapped": false,
+  "metrics": {},
+  "note": "third_party/AEGIS is missing. Run scripts/00_bootstrap_aegis.sh, then wire the TODOs in src/baselines/b0_aegis_reproduce.py."
+}
