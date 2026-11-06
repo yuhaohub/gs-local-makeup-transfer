@@ -30,6 +30,21 @@ git submodule add https://github.com/Woleek/AEGIS.git third_party/AEGIS
 ```
 按 AEGIS README 装依赖后，先跑通 **B0 去身份复现**，再改 B1→B2→M（见交付文档 §8 / 工程第一刀）。
 
+## B0 gate
+
+`scripts/check_b0_gate.sh` 检查冻结目录；`third_party/AEGIS` 不在时提示 `scripts/00_bootstrap_aegis.sh`（`--bootstrap` 会执行它）。然后调用 `python src/baselines/b0_aegis_reproduce.py`，由该模块写入摘要（门禁不另起一套字段）：
+
+- `results/b0_aegis_sanity_summary.json`：`experiment_id`, `desc`, `status`, `bootstrapped`, `metrics`, `note`
+- `results/b0_aegis_sanity_summary.csv`：`experiment_id,status,bootstrapped,command,return_code,note`
+
+`status` 取 `bootstrap_required`、`deps_missing`、`gpu_required`、`not_run`、`ok`。缺依赖或无 CUDA（`deps_missing` / `gpu_required`）时门禁退出码为 0。
+
+```bash
+bash scripts/check_b0_gate.sh
+bash scripts/check_b0_gate.sh --bootstrap
+python src/baselines/b0_aegis_reproduce.py
+```
+
 ## 实验矩阵（提交代码时对齐）
 | ID | 含义 |
 |----|------|
