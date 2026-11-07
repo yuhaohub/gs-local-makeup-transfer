@@ -45,3 +45,21 @@ A `(N, 3)` array passed with a DC residual of the same shape is the color-field 
 `lpips` compares RGB images in `[0, 1]`, shape `(H, W, 3)`, with AlexNet spatial LPIPS on CPU. Inputs are clipped to `[0, 1]`. With no mask, the result is the mean of the spatial distance map. With a mask, it is the weighted mean over `M`. An all-zero mask scores 0.
 
 Smoke check (no GPU): `python makeup/tests/test_smoke.py`. If `torch` or `lpips` is missing, the LPIPS test expects `ImportError` and the other tests still run.
+
+### NeRSemble 306 masking smoke
+
+`makeup/aegis_mask.py` builds `M` with `SemanticMask.from_parsing` and projects a residual through `project_residual` / `apply_residual` (`supp(δ) ⊆ M`, `||δ||∞ ≤ ε`). The NeRSemble 306 demo has `point_cloud.ply` and `renders/306.png` and no parsing labels. A `.npy` sidecar is used when it exists:
+
+- `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`
+- `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy`
+
+Otherwise `documented_fallback_labels` fills a label grid with the ids above and still calls `from_parsing`. That grid is not a parse of subject 306.
+
+`projected_pgd_step` is one L∞ sign step followed by that projection. AEGIS Foolbox L∞ PGD (the B0-a 306 path) and `adaptive_linf_pgd_attack` only clamp ε. The in-loop call site is a TODO in `makeup/aegis_mask.py` for james. `--select-regions` is a FLAME subset, not this mask.
+
+```bash
+python scripts/nersemble306_makeup_mask_smoke.py
+python makeup/tests/test_nersemble306_mask_smoke.py
+```
+
+Run steps for the existing 306 ply/png and AdaFace weights on AutoDL are in the repo `README.md`. The makefile `mask_avatar` target is FaceScape 527; the 306 smoke does not call it.
