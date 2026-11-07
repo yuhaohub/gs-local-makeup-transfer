@@ -10,7 +10,7 @@ in `assets/MANIFEST.md`.
 ## Where bytes live
 
 - Asset root: `/root/autodl-fs/gs-assets/`.
-- Subdirs: `weights/`, `avatars/`, `masks/`, `targets/`.
+- Subdirs: `weights/`, `avatars/`, `parsing/`, `targets/`.
 - Machine-side per-run summary and log: `/root/autodl-fs/gs-assets/runs/<run_id>/`.
 - Repo summary for that run: `results/<exp_id>/summary.json`,
   `results/<exp_id>/summary.csv`, and the log in the same directory.
@@ -23,8 +23,8 @@ Frozen names already on disk:
 
 - `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg` (B1-a, default)
 - `/root/autodl-fs/gs-assets/targets/lfw_T0.jpg` (later B1 still)
-- NeRSemble subject 306 avatar and mask under `avatars/` and `masks/`
-  (rows in the manifest)
+- `/root/autodl-fs/gs-assets/parsing/306.npy` (subject 306 parsing mask)
+- NeRSemble subject 306 avatar under `avatars/` (row in the manifest)
 
 ## Roles
 
@@ -38,7 +38,7 @@ Frozen names already on disk:
 ## Four gates
 
 1. **Change is on master (PR merged).** The tree that will run is `master`, not an open feature branch.
-2. **MANIFEST entry exists and paths match frozen names.** Every path the run reads has a row in `assets/MANIFEST.md`. The path uses the frozen basename (`celeba_T0.jpg`, `lfw_T0.jpg`, subject `306` avatar/mask, AdaFace `adaface_ir50_ms1mv2.ckpt`). A missing row or a substitute filename fails this gate.
+2. **MANIFEST entry exists and paths match frozen names.** Every path the run reads has a row in `assets/MANIFEST.md`. The path uses the frozen basename (`celeba_T0.jpg`, `lfw_T0.jpg`, subject `306` avatar, `parsing/306.npy`, AdaFace `adaface_ir50_ms1mv2.ckpt`). A missing row or a substitute filename fails this gate.
 3. **`results/<exp_id>/` summary path is free (no clobber).** That directory does not already contain `summary.json`, `summary.csv`, or the run log. Occupied historical summaries stay in place and are not the write target:
    - B0-a: `results/b0_aegis_sanity_summary.json` and `.csv` (`pipeline_ok`, subject 306)
    - B1 celeba wiring: `results/b1_targeted_impersonation_summary.json` and `.csv` (not launched)

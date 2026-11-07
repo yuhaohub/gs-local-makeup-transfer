@@ -178,7 +178,7 @@ python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
 
 ### 必搬（真相源）
 
-整份 `/root/autodl-fs/gs-assets/`：`weights/`、`avatars/`、`masks/`、`targets/`，以及资产根里的 `MANIFEST.md`。`runs/<run_id>/` 在同一根下，整棵搬走时一起走。优先把同一块 autodl-fs 重新挂上。不能挂时，`rsync` 整棵目录，再按仓库 `assets/MANIFEST.md` 的 sha256 和 bytes 核对。
+整份 `/root/autodl-fs/gs-assets/`：`weights/`、`avatars/`、`parsing/`（`parsing/306.npy`）、`targets/`，以及资产根里的 `MANIFEST.md`。`runs/<run_id>/` 在同一根下，整棵搬走时一起走。优先把同一块 autodl-fs 重新挂上。不能挂时，`rsync` 整棵目录，再按仓库 `assets/MANIFEST.md` 的 sha256 和 bytes 核对。
 
 ### 可重建（别当资产）
 
