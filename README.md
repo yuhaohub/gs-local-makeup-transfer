@@ -86,7 +86,15 @@ python scripts/make_nersemble306_parsing.py
 python scripts/make_nersemble306_parsing.py --image /path/to/306.png --cpu
 ```
 
-默认读 `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png`（没有就 `--image`）。默认写出 `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`，形状 `(H, W)`、`int64`。另一处 sidecar 是 `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy`（用 `--out` 指过去）。网络输入与上游 `test.py` 一样先双线性缩到 512×512，标签再用最近邻缩回原图，以便和 `renders/306.png` 对齐。检测到 CUDA 才用 GPU，否则走 CPU；`--cpu` 强制 CPU。缺仓库、缺权重或缺图时退出码 2，并说明缺什么。
+默认读 `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png`（没有就 `--image`）。BiSeNet 之前先做人脸检测：用 AEGIS 已经在用的 InsightFace `buffalo_l` / `det_10g.onnx`（`insightface.model_zoo.get_model` 的 RetinaFace/SCRFD `detect`）。不另装 `retinaface` 包。检测框按 `--margin`（默认 0.25）外扩，默认再收成正方形（`--no-square` 可关），然后裁到图内。BiSeNet 只跑这块裁剪；标签最近邻缩回裁剪尺寸，再贴回与原图同大的全 0 背景。因此 `parsing/306.npy` 仍是 `(H, W)`、`int64`，和 `renders/306.png` 对齐。另一处 sidecar 是 `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy`（用 `--out` 指过去）。
+
+写出之后用 `SemanticMask.from_parsing` 和 `DEFAULT_PARSING_LABELS` 检查唇、眼、眉、脸颊的像素数都大于 0。有任一为 0（上一张被拒就是 lip=0，缺 id 3/5/12/13）则退出码 1，npy 不算接受。检测依赖缺失时退出码 2，并写明要装什么：`pip install insightface onnxruntime`（若报 `cv2` 再装 `opencv-python-headless`），权重必须已经在 `~/.insightface/models/buffalo_l/det_10g.onnx`。脚本不下载该 onnx，也不调用 `insightface.utils.ensure_available`。AutoDL 上这个文件通常已经在。检测到 CUDA 才用 GPU，否则走 CPU；`--cpu` 强制 CPU。缺仓库、缺 BiSeNet 权重或缺图同样退出码 2。
+
+成功写出（退出码 0）后重新跑质量检查：
+
+```bash
+python scripts/viz_nersemble306_parsing.py
+```
 
 这不是 masking，也不装 AEGIS 攻击依赖。不要在导师点头前开 AutoDL 上的 GPU masking。不跑 BiSeNet 权重的检查：
 
@@ -96,7 +104,7 @@ python makeup/tests/test_nersemble306_parsing.py
 
 ### 306 parsing 质量检查（CPU）
 
-真实 `parsing/306.npy` 先在 CPU 上对一下 `DEFAULT_PARSING_LABELS`，再交给导师看，不要接着开 GPU masking。`scripts/viz_nersemble306_parsing.py` 用 `SemanticMask.from_parsing` 统计 lip / eye / brow / cheek 和并集的像素数（以及占 `H×W` 的比例），打印图里实际出现的 id 和个数，并把这些区域叠到 `renders/306.png` 上。唇、眼、眉、脸颊用不同颜色；`M` 以外保持原图像素。唇或任一必需区域像素数为 0 时退出码是 1，叠加图仍然会写出来。缺左/右半边 id（例如眉 3、眼 5）会打出 `INCOMPLETE`，退出码仍由「区域是否为空」决定。这一步不跑 BiSeNet，也不启动 GPU masking。
+`scripts/make_nersemble306_parsing.py` 成功写出新的 `parsing/306.npy` 之后，重新跑这一步，再把终端输出和叠加图交给导师。`scripts/viz_nersemble306_parsing.py` 用 `SemanticMask.from_parsing` 统计 lip / eye / brow / cheek 和并集的像素数（以及占 `H×W` 的比例），打印图里实际出现的 id 和个数，并把这些区域叠到 `renders/306.png` 上。唇、眼、眉、脸颊用不同颜色；`M` 以外保持原图像素。唇或任一必需区域像素数为 0 时退出码是 1，叠加图仍然会写出来。缺左/右半边 id（例如眉 3、眼 5）会打出 `INCOMPLETE`，退出码仍由「区域是否为空」决定。这一步不跑 BiSeNet，也不启动 GPU masking。
 
 在仓库根目录执行（AutoDL 上 306 的 npy 和 png 已经在默认路径时，这一条就够）：
 
