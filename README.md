@@ -174,13 +174,27 @@ python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
 
 ## 新机
 
-资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。冻结名、实验 ID 和盘上路径记在 `assets/MANIFEST.md`。开 GPU 前 bob 按 `docs/gpu_launch_checklist.md` 放行：改动已在 `master`、MANIFEST 路径与冻结名一致、`results/<exp_id>/` 摘要槽位空着，导师在这三条通过之后才授权。bob 绿灯后 james 才能加 `--launch`。`autodl-tmp` 只作缓存。一次运行只写 `results/<exp_id>/summary.{json,csv}` 和同目录日志；机器侧副本在 `/root/autodl-fs/gs-assets/runs/<run_id>/`。已有的扁平摘要不覆盖。
+资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。冻结名、实验 ID 和路径以 `assets/MANIFEST.md` 为准；GPU 放行以 `docs/gpu_launch_checklist.md` 为准。本节不重列这两份文件。一次运行一个摘要槽，规则在 GPU 清单里。
+
+### 必搬（真相源）
+
+整份 `/root/autodl-fs/gs-assets/`：`weights/`、`avatars/`、`masks/`、`targets/`，以及资产根里的 `MANIFEST.md`。`runs/<run_id>/` 在同一根下，整棵搬走时一起走。优先把同一块 autodl-fs 重新挂上。不能挂时，`rsync` 整棵目录，再按仓库 `assets/MANIFEST.md` 的 sha256 和 bytes 核对。
+
+### 可重建（别当资产）
+
+这些在新机上重做，不当作资产搬走：
+
+- `autodl-tmp` 里的缓存。
+- uv 下载缓存 `uv-cache`。它只是可选加速，不是真相源。wheelhouse 同样只作备用。
+- 虚拟环境。不要把正在使用的 `.venv` 软链到另一台机器。同一代 CUDA 优先用**同一路径**的 venv tar（shebang 和 `pyvenv.cfg` 写的是绝对路径；#16 没有另给 tar 的文件路径）。否则按 lockfile 执行 `uv sync` 重建。AEGIS 仍在 `third_party/AEGIS` 里用 `uv pip install -e .`；FLAME 导入失败时再装 `chumpy`。
+
+### 新机三步
+
+1. 挂载同一块 autodl-fs，或 `rsync` `/root/autodl-fs/gs-assets/`，再按 `assets/MANIFEST.md` 核对 sha256 / bytes。挂上同一块盘就是快迁。只拷系统盘、不带这份资产根，不算迁完。
+2. `git clone` 或 `git pull` 到 `master`，再准备环境：按 lockfile 执行 `uv sync`，或按上面的同一路径解开 venv tar。
+3. `docs/gpu_launch_checklist.md` 全绿之前，不要加 `--launch`。
 
 代码不要在 NFS 上多个人同时写同一份工作区。文件存储上只放 bare / 只读 mirror，或者 `rsync` / `clone` 到本机工作区再改。
-
-环境：同一代 CUDA 优先用**同一路径**的 venv tar（shebang 和 `pyvenv.cfg` 写的是绝对路径）。`uv-cache` 或 wheelhouse 只作备用。不要把正在使用的 `.venv` 软链到另一台机器。
-
-安装：在 `third_party/AEGIS` 里用 `uv pip install -e .`。FLAME 导入失败时再装 `chumpy`。
 
 #15 合并后，DC 冒烟要重新装钩子再启动（超参仍是原来的 B0-a）：
 
