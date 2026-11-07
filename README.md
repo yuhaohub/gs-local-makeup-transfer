@@ -53,7 +53,7 @@ python src/baselines/b0_aegis_reproduce.py
 
 `third_party/AEGIS` 的 makefile 目标 `mask_avatar` 写的是 FaceScape 527。527 已取消。306 冒烟直接调用 `scripts/mask_avatar.py`，参数与 B0-a 摘要里的命令一致。
 
-306 demo 只有 `datasets/NeRSembleReconst/avatars/306/point_cloud.ply` 和 `datasets/NeRSembleReconst/renders/306.png`，没有 parsing 标签。有 `.npy` 整数标签时走 `SemanticMask.from_parsing`（BiSeNet / CelebAMask-HQ id，见 `makeup/README.md`）。没有标签时，CPU 冒烟用 `documented_fallback_labels` 造一张同样 id 的标签图再交给 `from_parsing`。这张图不是 306 的解析结果。
+306 demo 只有 `datasets/NeRSembleReconst/avatars/306/point_cloud.ply` 和 `datasets/NeRSembleReconst/renders/306.png`，没有 parsing 标签，也不带 `parsing/306.npy`。有 `.npy` 整数标签时走 `SemanticMask.from_parsing`（BiSeNet / CelebAMask-HQ id，见 `makeup/README.md`）。没有标签时，CPU 冒烟用 `documented_fallback_labels` 造一张同样 id 的标签图再交给 `from_parsing`。这张图不是 306 的解析结果。真实 `306.npy` 用下面的 BiSeNet 脚本生成。
 
 AEGIS 的 Foolbox L∞ PGD（B0-a 那条，`AEGIS._run_foolbox_attack`）和 `--adaptive-epsilon` 用的 `adaptive_linf_pgd_attack` 原文都只做 ε 裁剪。`--select-regions` 是 FLAME 区域子集，不是 `from_parsing`。妆容约束仍是 `project_residual`。步内钩子在 `makeup/aegis_pgd_hook.py`（接上 PR #10 留给 james 的两个调用点，不再只是 stub）：
 
@@ -70,6 +70,29 @@ python makeup/tests/test_nersemble306_mask_smoke.py
 ```
 
 摘要写到 `results/nersemble306_makeup_mask_smoke.json` 和 `.csv`。`status=cpu_smoke_ok` 表示 CPU 投影满足支撑约束；`gpu_launched=false` 表示没有启动 `mask_avatar.py`。
+
+### 真实 306.npy
+
+NeRSemble demo 不带 `parsing/306.npy`。批准的做法是用 [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch) 的 BiSeNet（CelebAMask-HQ，19 类）解析这一张 306 渲染，写出妆容管线要的整数标签图。类别 id 与 `makeup.mask.DEFAULT_PARSING_LABELS` 一致：唇 12/13，眼 4/5，眉 2/3，皮肤 1 当作脸颊。`documented_fallback_labels` 只给 CPU 冒烟用，不是这张图。
+
+```bash
+git clone https://github.com/zllrunning/face-parsing.PyTorch.git third_party/face-parsing.PyTorch
+```
+
+权重不在该仓库里。从 face-parsing.PyTorch README 的 Google Drive 下载 `79999_iter.pth`（https://drive.google.com/open?id=154JgKpzCPW82qINcVieuPH3fZ2e0P812），放到 `third_party/face-parsing.PyTorch/res/cp/79999_iter.pth`。脚本不克隆、不下载。`Resnet18.init_weight` 原本会再拉一份 ImageNet ResNet-18；这里关掉那次下载，因为 `79999_iter.pth` 里已经有这些层。
+
+```bash
+python scripts/make_nersemble306_parsing.py
+python scripts/make_nersemble306_parsing.py --image /path/to/306.png --cpu
+```
+
+默认读 `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png`（没有就 `--image`）。默认写出 `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`，形状 `(H, W)`、`int64`。另一处 sidecar 是 `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy`（用 `--out` 指过去）。网络输入与上游 `test.py` 一样先双线性缩到 512×512，标签再用最近邻缩回原图，以便和 `renders/306.png` 对齐。检测到 CUDA 才用 GPU，否则走 CPU；`--cpu` 强制 CPU。缺仓库、缺权重或缺图时退出码 2，并说明缺什么。
+
+这不是 masking，也不装 AEGIS 攻击依赖。不要在导师点头前开 AutoDL 上的 GPU masking。不跑 BiSeNet 权重的检查：
+
+```bash
+python makeup/tests/test_nersemble306_parsing.py
+```
 
 AutoDL 上用机器上已有的 306 ply/png 和 AdaFace 权重 `third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt`。不要重新下载，也不要跑 `make mask_avatar`。在 `third_party/AEGIS` 目录执行：
 
@@ -89,7 +112,7 @@ uv run python scripts/mask_avatar.py \
   --output-name NeRSembleMasked306
 ```
 
-真实标签放在 `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`（或 `avatars/306/parsing.npy`），也可以：
+真实标签用上面的 `scripts/make_nersemble306_parsing.py` 生成（demo 不自带这个文件），放在 `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`（或 `avatars/306/parsing.npy`），也可以：
 
 ```bash
 python scripts/nersemble306_makeup_mask_smoke.py \

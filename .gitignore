@@ -14,6 +14,7 @@ results/**
 !results/**/*.csv
 !results/**/*.json
 third_party/AEGIS/
+third_party/face-parsing.PyTorch/
 *.log
 .DS_Store
 wandb/

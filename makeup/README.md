@@ -30,6 +30,31 @@ Default map: `makeup.mask.DEFAULT_PARSING_LABELS`. These are the class ids emitt
 
 Other ids, including background `0`, eyeglasses `6`, nose `10`, inner mouth `11`, and hair `17`, stay outside `M`. Regions named in the label map are stored even when no pixel has that id. Ids that share a region are combined with a pixelwise max.
 
+### NeRSemble 306 label map
+
+The NeRSemble demo does not ship `parsing/306.npy`. The approved way to build the real integer map for subject 306 is `scripts/make_nersemble306_parsing.py`. It runs BiSeNet from a local [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch) checkout (CelebAMask-HQ, 19 classes) and writes `(H, W)` `int64` labels. Those ids are `DEFAULT_PARSING_LABELS`: lip 12/13, eye 4/5, brow 2/3, skin 1 as cheek.
+
+```bash
+git clone https://github.com/zllrunning/face-parsing.PyTorch.git third_party/face-parsing.PyTorch
+```
+
+The checkpoint is not in that repo. Download `79999_iter.pth` from the Google Drive link in the face-parsing.PyTorch README (`https://drive.google.com/open?id=154JgKpzCPW82qINcVieuPH3fZ2e0P812`) and place it at `third_party/face-parsing.PyTorch/res/cp/79999_iter.pth`. The script does not clone the repo and does not download weights. `Resnet18.init_weight` would also fetch ImageNet ResNet-18; that download is disabled because `79999_iter.pth` already contains those layers.
+
+```bash
+python scripts/make_nersemble306_parsing.py
+python scripts/make_nersemble306_parsing.py --image /path/to/306.png --cpu
+```
+
+Default image: `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png` when it is already on disk, otherwise `--image`. Default output: `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`. Alternate sidecar: `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy` (`--out`). The network input matches upstream `test.py` (bilinear resize to 512×512, ImageNet normalization, argmax of `net(img)[0]`). Labels are nearest-resized back to the source `H×W` so they line up with the render. CUDA is used only when it is already available; `--cpu` forces CPU. A missing checkout, checkpoint, or image exits 2 and names what is missing.
+
+This does not install AEGIS attack dependencies and does not start masking. GPU masking still waits for a mentor greenlight.
+
+Smoke without the BiSeNet checkpoint (the real forward is skipped or mocked):
+
+```bash
+python makeup/tests/test_nersemble306_parsing.py
+```
+
 ### Palette term
 
 On residual colors `δ_p` and mask weights `M_p` clipped to `[0, 1]`, with `Z = Σ_p M_p` (the loss is 0 when `Z` is 0):
@@ -48,7 +73,7 @@ Smoke check (no GPU): `python makeup/tests/test_smoke.py`. If `torch` or `lpips`
 
 ### NeRSemble 306 masking smoke
 
-`makeup/aegis_mask.py` builds `M` with `SemanticMask.from_parsing` and projects a residual through `project_residual` / `apply_residual` (`supp(δ) ⊆ M`, `||δ||∞ ≤ ε`). The NeRSemble 306 demo has `point_cloud.ply` and `renders/306.png` and no parsing labels. A `.npy` sidecar is used when it exists:
+`makeup/aegis_mask.py` builds `M` with `SemanticMask.from_parsing` and projects a residual through `project_residual` / `apply_residual` (`supp(δ) ⊆ M`, `||δ||∞ ≤ ε`). The NeRSemble 306 demo has `point_cloud.ply` and `renders/306.png` and does not ship parsing labels. Build the real map with `scripts/make_nersemble306_parsing.py` (see above). A `.npy` sidecar is used when it exists:
 
 - `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`
 - `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy`
