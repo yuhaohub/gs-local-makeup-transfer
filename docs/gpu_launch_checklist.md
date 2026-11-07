@@ -43,6 +43,7 @@ Frozen names already on disk:
    - B0-a: `results/b0_aegis_sanity_summary.json` and `.csv` (`pipeline_ok`, subject 306)
    - B1 celeba wiring: `results/b1_targeted_impersonation_summary.json` and `.csv` (not launched)
    - 306 makeup-mask CPU smoke: `results/nersemble306_makeup_mask_smoke.json` and `.csv` (not B2)
+   - B2 write targets are not those flat files. One still, one directory: `results/b2_celeba_T0/summary.json` and `summary.csv`, and later `results/b2_lfw_T0/`. A wiring record there has `pipeline_ok` false and null cosines / outside-M. That record is not a finished attack and does not by itself clobber gate 3. The authorized run of that same still updates the same directory. A second finished run needs a new directory. This checklist does not enable B2. The CLI is in the README「B2」section and still needs all four gates before `--launch`.
 4. **Mentor authorizes only after gates 1–3 are green.**
 
 When all four are green, bob greenlights. Then james may `--launch`.

@@ -50,7 +50,7 @@ python src/baselines/b0_aegis_reproduce.py
 
 ## NeRSemble 306 妆容 mask 冒烟
 
-正式基线是 **NeRSemble subject 306**。B0-a 已在该头像上跑通原文 AEGIS masking（AdaFace，`eps=0.1`，`target-features DC`，`linfpgd`，聚合余弦约 -0.2488），摘要在 `results/b0_aegis_sanity_summary.*`。这一刀只把妆容语义 mask 接到同一条 masking 路径上，检查残差满足 \(\mathrm{supp}(\delta)\subseteq M\) 且 \(\|\delta\|_\infty\le\varepsilon\)。它不是完整 B2（没有定向冒充，也没有论文评测）。
+正式基线是 **NeRSemble subject 306**。B0-a 已在该头像上跑通原文 AEGIS masking（AdaFace，`eps=0.1`，`target-features DC`，`linfpgd`，聚合余弦约 -0.2488），摘要在 `results/b0_aegis_sanity_summary.*`。这一刀只把妆容语义 mask 接到同一条 masking 路径上，检查残差满足 \(\mathrm{supp}(\delta)\subseteq M\) 且 \(\|\delta\|_\infty\le\varepsilon\)。它不是完整 B2（没有定向冒充，也没有论文评测）。定向冒充加上这张 mask 的命令在「B2」一节。
 
 `third_party/AEGIS` 的 makefile 目标 `mask_avatar` 写的是 FaceScape 527。527 已取消。306 冒烟直接调用 `scripts/mask_avatar.py`，参数与 B0-a 摘要里的命令一致。
 
@@ -250,12 +250,71 @@ python src/baselines/tests/test_b1_targeted_impersonation.py
 
 摘要字段包括 `pipeline_ok`、`return_code`、`cos_adv_source`、`cos_adv_target`，以及能看到 GPU 时的显卡名。`makeup_hook_armed` 保持 false。
 
+## B2 定向冒充 + 妆容 mask
+
+B2 是 B1 的全脸定向冒充，再加上妆容语义 mask \(M\)。源头像仍是 NeRSemble **306**。攻击超参与 B1 / B0-a 相同：AdaFace，`eps=0.1`，300 steps，`target-features DC`，`linfpgd`，半径 1，seed 42。Foolbox 准则仍是匹配列（下标 1）的 `TargetedMisclassification`，最大化 `cos(adv, emb(T))`。不带这条命令时，B1 自己的行为不变：B1 仍拒绝 `--arm-hook`，妆容钩子保持关闭。
+
+\(M\) 读盘上的 `/root/autodl-fs/gs-assets/parsing/306.npy`。目录是 `parsing/`，不是 `masks/`。钩子复用 `makeup/aegis_pgd_hook.py` 里已有的 DC 投影（`dc_hook_from_parsing`，`kind=dc`）。`(H, W)` 标签图仍是语义来源，按高斯均值采样成 `(N,)` 后再投影，使 \(\mathrm{supp}(\delta)\subseteq M\) 且 \(\|\delta\|_\infty\le 0.1\)。不使用 `documented_fallback` 标签。
+
+T 与 B1 相同，仓库不收录整库：
+
+- 第一刀：`/root/autodl-fs/gs-assets/targets/celeba_T0.jpg`
+- 后一刀：`/root/autodl-fs/gs-assets/targets/lfw_T0.jpg`
+
+一刀一个目录，文件名是 `summary.json` 和 `summary.csv`。不要写进 `results/` 根目录，也不要覆盖已有的扁平摘要（`b0_aegis_sanity_summary.*`、`b1_targeted_impersonation_summary.*`、`nersemble306_makeup_mask_smoke.*`）：
+
+- `results/b2_celeba_T0/`
+- `results/b2_lfw_T0/`
+
+门禁字段写在摘要里，接线时不填 GPU 数字：`pipeline_ok`、`cos_adv_source`（`cos(adv, source)`）、`cos_adv_target`（`cos(adv, T)`）、`outside_m_abs_delta`（\(M\) 外 \(|\delta|\) 的最大值，通过为 0）。四项齐了且最后一项为 0，`pipeline_ok` 才为 true。
+
+默认不加 `--launch`，也不装钩子，不授权 AutoDL。下面这条只写摘要：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py
+```
+
+开关：
+
+- `--arm-hook`：装上 `kind=dc` 钩子。单独使用不启动 GPU。解析文件不在盘上就退出，不造一张替代 mask。
+- `--refuse-hook`：明确拒绝妆容钩子并退出。B2 不能当成没有 \(M\) 的 B1 来跑。
+- `--arm-hook` 和 `--refuse-hook` 一起会被拒绝。
+- `--launch` 必须和 `--arm-hook` 一起用。缺照片、缺 `parsing/306.npy`、缺 306 头像或 CUDA 时不启动。
+- `--parsing` 如果落在 `masks/` 下，或文件名不是 `306.npy`，会被拒绝。
+- `--adaptive-epsilon` 和 `--select-regions` 会被拒绝。前者不是这条 Foolbox 路径，后者是 FLAME 区域，不是 `from_parsing`。
+
+真正开 GPU 之前仍要过 `docs/gpu_launch_checklist.md`。在仓库根目录执行。脚本进入 `third_party/AEGIS` 并用 `uv run`，与 B1 同一环境：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
+  --parsing /root/autodl-fs/gs-assets/parsing/306.npy \
+  --arm-hook \
+  --launch
+```
+
+LFW 是后一刀，摘要目录换成 `results/b2_lfw_T0/`：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/lfw_T0.jpg \
+  --parsing /root/autodl-fs/gs-assets/parsing/306.npy \
+  --arm-hook \
+  --launch
+```
+
+无 GPU 的接线检查：
+
+```bash
+python src/baselines/tests/test_b2_makeup_impersonation.py
+```
+
 ## 实验矩阵（提交代码时对齐）
 | ID | 含义 |
 |----|------|
 | B0 | AEGIS 原文去身份复现（正式主体 NeRSemble 306；B0-b / FaceScape 527 已取消） |
 | B1 | 同接口改定向冒充（全脸，CelebA/LFW 静止照片，无妆容 mask；第一刀 celeba_T0.jpg） |
-| B2 | + 妆容 mask + 幅度约束 |
+| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；默认不 `--launch` |
 | M  | + DPA + 预处理不变（主方法） |
 | A1/A2/A3 | 消融 DPA / 预处理 / univ |
 | C1 | 中期最优管线 |

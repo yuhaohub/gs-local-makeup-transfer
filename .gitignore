@@ -10,6 +10,9 @@ venv/
 *.onnx
 results/**
 !results/.gitkeep
+# Re-include directories so a per-run folder such as results/b2_celeba_T0/
+# can track summary.json and summary.csv. Other files under results/ stay ignored.
+!results/**/
 !results/**/*.md
 !results/**/*.csv
 !results/**/*.json

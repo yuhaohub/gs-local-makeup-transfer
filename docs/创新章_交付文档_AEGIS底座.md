@@ -178,7 +178,7 @@ Gaussian-to-Mesh 纹理迁移、顶点级优化：服务高保真表征与效率
 ### 6.2 必跑设置
 1. **AEGIS 原设定复现 sanity check**（去身份指标，证明底座接对）。正式主体冻结为 **NeRSemble 306**：已合并的 B0-a（`status=pipeline_ok`，`return_code=0`，`subject=306`）即正式 B0。**B0-b（FaceScape 527）已取消**，不在关键路径上，不再等待该主体；  
 2. **AEGIS→定向冒充（全脸颜色，无 mask）**。冒充目标 T 是 CelebA 或 LFW 的一张静止人脸照片，经 AdaFace 得到嵌入，不是第二套 3DGS。盘上 NeRSemble 只有主体 306。第一刀样本是 `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg`（盘上冻结名；仓库不收录整库）。后一刀是 `/root/autodl-fs/gs-assets/targets/lfw_T0.jpg`。上游 `AEGIS.run` 把裸 `tensor([1])` 交给 Foolbox，未定向 `Misclassification` 会降低与参考嵌入 `e_r` 的余弦；`--target-image` 只提供 `e_r`。B1 把 `e_r` 设成 T，准则改为匹配类（logit 下标 1）的 `TargetedMisclassification`，最大化 `cos(adv, emb(T))`。不装妆容钩子。照片就位前不启动 GPU。命令见仓库 README「B1」一节；  
-3. **+ 语义妆容 mask + \(\mathcal{L}_{\mathrm{nat}}\)**；  
+3. **+ 语义妆容 mask + \(\mathcal{L}_{\mathrm{nat}}\)**。妆容 mask 这一步的接线是 B2：B1 的定向冒充加上 `/root/autodl-fs/gs-assets/parsing/306.npy` 的语义 mask \(M\)（复用已有 `kind=dc` 钩子，采样成 \((N,)\) 权重）。摘要在 `results/b2_<T>/`（第一刀 `results/b2_celeba_T0/`）。命令见仓库 README「B2」。默认不加 `--launch`。\(\mathcal{L}_{\mathrm{nat}}\) 不在这条接线里，摘要里的 `pipeline_ok`、`cos(adv, source)`、`cos(adv, T)`、\(M\) 外 \(|\delta|\) 在真实开跑前保持空；  
 4. **+ \(\mathcal{F}_{\mathrm{DPA}}\)**；  
 5. **+ 预处理族 \(A\)**；  
 6. **完整方法**；  
