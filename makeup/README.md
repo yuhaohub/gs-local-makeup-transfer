@@ -55,6 +55,29 @@ Smoke without the BiSeNet checkpoint (the real forward is skipped or mocked):
 python makeup/tests/test_nersemble306_parsing.py
 ```
 
+### NeRSemble 306 parsing overlay
+
+`scripts/viz_nersemble306_parsing.py` is a CPU quality check for an existing `parsing/306.npy`. It builds `M` with `SemanticMask.from_parsing` and `DEFAULT_PARSING_LABELS`, prints pixel counts and the fraction of `H×W` for lip, eye, brow, cheek, and the union, prints the raw id histogram, and writes an RGB overlay. It does not run BiSeNet and does not start GPU masking.
+
+On AutoDL, from the repo root (the 306 npy and png are already at the defaults):
+
+```bash
+python scripts/viz_nersemble306_parsing.py
+```
+
+```bash
+python scripts/viz_nersemble306_parsing.py \
+  --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy \
+  --image third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png \
+  --out results/nersemble306_parsing_overlay.png
+```
+
+Paste the stdout, including the `overlay:` line. Legend at alpha 0.55, blend `(1-alpha)*image + alpha*color`, paint order cheek, brow, eye, lip: cheek `#F0B428`, brow `#326EE6`, eye `#28C850`, lip `#DC283C`. Pixels outside `M` stay the original image. Exit code 1 means lip, eye, brow, or cheek has no pixels; the PNG is still written. A missing left/right id (brow `3`, eye `5`) is an `INCOMPLETE` line. The synthetic-grid check does not read a real `306.npy`:
+
+```bash
+python makeup/tests/test_nersemble306_parsing_viz.py
+```
+
 ### Palette term
 
 On residual colors `δ_p` and mask weights `M_p` clipped to `[0, 1]`, with `Z = Σ_p M_p` (the loss is 0 when `Z` is 0):
