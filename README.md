@@ -17,7 +17,8 @@ makeup/              语义 mask 与自然性
 transfer/            DPA 代理 + 预处理 A
 eval/                API / mean_delta / 自然性协议
 baselines/midterm/   中期脚本（仅消融）
-docs/                只放一份交付文档
+docs/                交付文档 + gpu_launch_checklist.md
+assets/              MANIFEST.md（冻结名 ↔ AutoDL 路径）
 configs/ scripts/ results/
 ```
 
@@ -173,7 +174,7 @@ python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
 
 ## 新机
 
-资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。
+资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。冻结名、实验 ID 和盘上路径记在 `assets/MANIFEST.md`。开 GPU 前 bob 按 `docs/gpu_launch_checklist.md` 放行：改动已在 `master`、MANIFEST 路径与冻结名一致、`results/<exp_id>/` 摘要槽位空着，导师在这三条通过之后才授权。bob 绿灯后 james 才能加 `--launch`。`autodl-tmp` 只作缓存。一次运行只写 `results/<exp_id>/summary.{json,csv}` 和同目录日志；机器侧副本在 `/root/autodl-fs/gs-assets/runs/<run_id>/`。已有的扁平摘要不覆盖。
 
 代码不要在 NFS 上多个人同时写同一份工作区。文件存储上只放 bare / 只读 mirror，或者 `rsync` / `clone` 到本机工作区再改。
 
@@ -246,10 +247,10 @@ python src/baselines/tests/test_b1_targeted_impersonation.py
 | C1 | 中期最优管线 |
 
 ## 协作约定
-1. 默认分支 `main`；功能分支 `feat/*`、`exp/*`。
-2. 一人一 PR；大结果与权重放 `results/` 本地或网盘，git 只跟踪小表 CSV/JSON。
+1. 默认分支 `master`；功能分支 `feat/*`、`exp/*`。
+2. 一人一 PR。一次运行只写 `results/<exp_id>/summary.{json,csv}` 和同目录日志，不覆盖已有摘要；机器侧副本在 `/root/autodl-fs/gs-assets/runs/<run_id>/`。大结果与权重放资产根或网盘，git 只跟踪小表 CSV/JSON。
 3. API 密钥用环境变量，禁止提交。
-4. 文档只改 `docs/创新章_交付文档_AEGIS底座.md` 这一份。
+4. 研究表述只改 `docs/创新章_交付文档_AEGIS底座.md`。资产清单是 `assets/MANIFEST.md`，GPU 门禁是 `docs/gpu_launch_checklist.md`。
 
 ## 本地路径
 本机共享盘：`/workspace/gs-local-makeup-transfer`
