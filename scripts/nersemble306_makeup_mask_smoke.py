@@ -99,6 +99,10 @@ def build_payload(smoke: dict, launch: dict, attach: dict | None = None) -> dict
         "gpu_return_code": launch.get("return_code"),
         "gpu_blockers": list(launch.get("blockers") or []),
         "gpu_log_tail": launch.get("log_tail") or "",
+        "gpu_aggregated_cosine_similarity": launch.get(
+            "aggregated_cosine_similarity"
+        ),
+        "gpu_epsilon_cosine": list(launch.get("epsilon_cosine") or []),
         "command": command_text(),
         "aegis_hook": smoke["aegis_hook"],
         "aegis_hook_api": smoke["aegis_hook_api"],
@@ -148,11 +152,13 @@ def write_summary(results_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "constraint_holds",
                 "epsilon",
                 "gpu_launched",
+                "gpu_aggregated_cosine_similarity",
                 "command",
                 "note",
             ],
         )
         writer.writeheader()
+        cosine = payload.get("gpu_aggregated_cosine_similarity")
         writer.writerow(
             {
                 "experiment_id": payload["experiment_id"],
@@ -162,6 +168,9 @@ def write_summary(results_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "constraint_holds": str(bool(payload["constraint_holds"])).lower(),
                 "epsilon": payload["epsilon"],
                 "gpu_launched": str(bool(payload["gpu_launched"])).lower(),
+                "gpu_aggregated_cosine_similarity": (
+                    "" if cosine is None else cosine
+                ),
                 "command": payload["command"],
                 "note": payload["note"],
             }
@@ -278,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
             "return_code": None,
             "blockers": collect_launch_blockers(args.aegis_root),
             "log_tail": "",
+            "aggregated_cosine_similarity": None,
+            "epsilon_cosine": [],
         }
     payload = build_payload(smoke, launch, attach)
     json_path, csv_path = write_summary(args.results_dir, payload)

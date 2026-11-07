@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
@@ -18,10 +19,15 @@ import numpy as np
 from makeup import SemanticMask
 from makeup.aegis_mask import (
     AEGIS_HOOK_TODO,
+    LOG_TAIL_CHARS,
+    LOG_TAIL_LINES,
     SUBJECT,
+    _log_tail,
     aegis_pgd_hook_stub,
     command_text,
     documented_fallback_labels,
+    extract_launch_metrics,
+    launch_mask_avatar,
     mask_avatar_argv,
     projected_pgd_step,
     resolve_parsing,
@@ -32,6 +38,26 @@ from makeup.residual import project_residual
 
 _SCRIPT = _ROOT / "scripts" / "nersemble306_makeup_mask_smoke.py"
 _B0A = _ROOT / "results" / "b0_aegis_sanity_summary.json"
+_COSINE_LINE = "Epsilon: 0.100 -> Aggregated Cosine Similarity: -0.2488"
+
+
+def _load_smoke_script():
+    spec = importlib.util.spec_from_file_location(
+        "nersemble306_makeup_mask_smoke", _SCRIPT
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _old_log_tail(text: str) -> str:
+    """The 20-line / 1500-char window that dropped the cosine line."""
+    lines = [line for line in text.splitlines() if line.strip()]
+    tail = "\n".join(lines[-20:])
+    if len(tail) > 1500:
+        tail = tail[-1500:]
+    return tail
 
 
 class NerSemble306MaskSmokeTest(unittest.TestCase):
@@ -202,6 +228,9 @@ class NerSemble306MaskSmokeTest(unittest.TestCase):
             ).read_text(encoding="utf-8")
             self.assertIn("306-makeup-mask-smoke", csv_text)
             self.assertIn("cpu_smoke_ok", csv_text)
+            self.assertIn("gpu_aggregated_cosine_similarity", csv_text)
+            self.assertIsNone(payload["gpu_aggregated_cosine_similarity"])
+            self.assertEqual(payload["gpu_epsilon_cosine"], [])
 
             blocked = subprocess.run(
                 [
@@ -226,6 +255,7 @@ class NerSemble306MaskSmokeTest(unittest.TestCase):
             )
             self.assertFalse(launched["gpu_launched"])
             self.assertEqual(launched["status"], "cpu_smoke_ok")
+            self.assertIsNone(launched["gpu_aggregated_cosine_similarity"])
 
         rejected = subprocess.run(
             [sys.executable, str(_SCRIPT), "--subject", "527"],
@@ -236,6 +266,84 @@ class NerSemble306MaskSmokeTest(unittest.TestCase):
         )
         self.assertEqual(rejected.returncode, 2)
         self.assertIn("306", rejected.stderr)
+
+    def test_log_tail_keeps_cosine_the_old_window_dropped(self) -> None:
+        self.assertGreater(LOG_TAIL_LINES, 20)
+        self.assertGreater(LOG_TAIL_CHARS, 1500)
+        buried = _COSINE_LINE + "\n" + "\n".join(
+            f"post {i:02d} " + ("y" * 100) for i in range(30)
+        )
+        self.assertNotIn("Aggregated Cosine Similarity", _old_log_tail(buried))
+        self.assertIn(_COSINE_LINE, _log_tail(buried))
+        trimmed = "\n".join(
+            [_COSINE_LINE] + [f"line {i:02d} " + ("z" * 100) for i in range(19)]
+        )
+        self.assertGreater(len(trimmed), 1500)
+        self.assertNotIn("Aggregated Cosine Similarity", _old_log_tail(trimmed))
+        pinned = _log_tail(trimmed)
+        self.assertIn(_COSINE_LINE, pinned)
+        self.assertLessEqual(len(pinned), LOG_TAIL_CHARS)
+        metrics = extract_launch_metrics(buried)
+        self.assertEqual(metrics["aggregated_cosine_similarity"], -0.2488)
+        self.assertEqual(metrics["epsilon_cosine"][0]["epsilon"], 0.1)
+
+    def test_extract_launch_metrics_keeps_every_epsilon(self) -> None:
+        text = (
+            "Foolbox Attack Steps: 100%\n"
+            "Epsilon: 0.050 -> Aggregated Cosine Similarity: 0.1200\n"
+            "Epsilon: 0.100 -> Aggregated Cosine Similarity: -0.2488\n"
+        )
+        metrics = extract_launch_metrics(text)
+        self.assertEqual(metrics["aggregated_cosine_similarity"], -0.2488)
+        self.assertEqual(
+            [row["epsilon"] for row in metrics["epsilon_cosine"]],
+            [0.05, 0.1],
+        )
+        self.assertEqual(
+            [
+                row["aggregated_cosine_similarity"]
+                for row in metrics["epsilon_cosine"]
+            ],
+            [0.12, -0.2488],
+        )
+        absent = extract_launch_metrics("Foolbox Attack Steps: 100%\n")
+        self.assertIsNone(absent["aggregated_cosine_similarity"])
+        self.assertEqual(absent["epsilon_cosine"], [])
+
+    def test_blocked_launch_has_no_cosine(self) -> None:
+        launch = launch_mask_avatar(Path("/no/such/aegis"))
+        self.assertFalse(launch["launched"])
+        self.assertIsNone(launch["aggregated_cosine_similarity"])
+        self.assertEqual(launch["epsilon_cosine"], [])
+        self.assertEqual(launch["log_tail"], "")
+
+    def test_summary_records_parsed_cosine(self) -> None:
+        script = _load_smoke_script()
+        smoke = run_cpu_mask_smoke(resolve_parsing(), steps=1)
+        filler = "\n".join(f"post {i:02d} " + ("y" * 100) for i in range(30))
+        log = _COSINE_LINE + "\n" + filler
+        parsed = extract_launch_metrics(log)
+        launch = {
+            "launched": True,
+            "return_code": 0,
+            "blockers": [],
+            "log_tail": _log_tail(log),
+            "aggregated_cosine_similarity": parsed["aggregated_cosine_similarity"],
+            "epsilon_cosine": parsed["epsilon_cosine"],
+        }
+        payload = script.build_payload(smoke, launch, None)
+        self.assertEqual(payload["gpu_aggregated_cosine_similarity"], -0.2488)
+        self.assertEqual(len(payload["gpu_epsilon_cosine"]), 1)
+        self.assertIn(_COSINE_LINE, payload["gpu_log_tail"])
+        self.assertIn("Aggregated cosine similarity=-0.2488", payload["note"])
+        with tempfile.TemporaryDirectory() as tmp:
+            json_path, csv_path = script.write_summary(Path(tmp), payload)
+            saved = json.loads(json_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["gpu_aggregated_cosine_similarity"], -0.2488)
+            csv_text = csv_path.read_text(encoding="utf-8")
+            header = csv_text.splitlines()[0]
+            self.assertIn("gpu_aggregated_cosine_similarity", header)
+            self.assertIn("-0.2488", csv_text)
 
 
 if __name__ == "__main__":

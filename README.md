@@ -69,7 +69,7 @@ python scripts/nersemble306_makeup_mask_smoke.py
 python makeup/tests/test_nersemble306_mask_smoke.py
 ```
 
-摘要写到 `results/nersemble306_makeup_mask_smoke.json` 和 `.csv`。`status=cpu_smoke_ok` 表示 CPU 投影满足支撑约束；`gpu_launched=false` 表示没有启动 `mask_avatar.py`。
+摘要写到 `results/nersemble306_makeup_mask_smoke.json` 和 `.csv`。`status=cpu_smoke_ok` 表示 CPU 投影满足支撑约束；`gpu_launched=false` 表示没有启动 `mask_avatar.py`。GPU 日志里若有 `Epsilon: ... -> Aggregated Cosine Similarity: ...`，该数从完整 stdout/stderr 写入 `gpu_aggregated_cosine_similarity`（JSON 另有逐 ε 的 `gpu_epsilon_cosine`）。`gpu_log_tail` 只是日志摘录。
 
 ### 真实 306.npy
 
@@ -162,6 +162,25 @@ B0-a 的 Foolbox 残差是 DC，形状 `(N, 1, 3)`（306 上 N=89021）。真实
 python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
   --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
 ```
+
+## 新机
+
+资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。
+
+代码不要在 NFS 上多个人同时写同一份工作区。文件存储上只放 bare / 只读 mirror，或者 `rsync` / `clone` 到本机工作区再改。
+
+环境：同一代 CUDA 优先用**同一路径**的 venv tar（shebang 和 `pyvenv.cfg` 写的是绝对路径）。`uv-cache` 或 wheelhouse 只作备用。不要把正在使用的 `.venv` 软链到另一台机器。
+
+安装：在 `third_party/AEGIS` 里用 `uv pip install -e .`。FLAME 导入失败时再装 `chumpy`。
+
+#15 合并后，DC 冒烟要重新装钩子再启动（超参仍是原来的 B0-a）：
+
+```bash
+python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
+  --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
+```
+
+同一条命令加上 `--launch` 会先装钩子再启动 `mask_avatar.py`。
 
 ## 实验矩阵（提交代码时对齐）
 | ID | 含义 |
