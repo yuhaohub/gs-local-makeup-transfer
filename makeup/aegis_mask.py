@@ -11,9 +11,11 @@ When that file is absent, ``documented_fallback_labels`` builds a label
 grid with the same BiSeNet ids and still calls ``from_parsing``. That
 grid is not a parse of subject 306.
 
-TODO(james): AEGIS does not apply this mask inside the attack loop.
-``projected_pgd_step`` is the step to call. ``aegis_pgd_hook_stub`` only
-returns that note.
+``projected_pgd_step`` is one sign step plus ``project_residual``.
+The in-loop attach path is ``makeup.aegis_pgd_hook``. It patches
+``adaptive_linf_pgd_attack`` and ``AEGIS._run_foolbox_attack`` when
+``third_party/AEGIS`` is present. ``aegis_pgd_hook_stub`` still returns
+the call-site note and does not import AEGIS.
 """
 
 from __future__ import annotations
@@ -82,7 +84,10 @@ AEGIS_HOOK_TODO = (
     "B0-a on subject 306 used Foolbox LinfPGD (scripts/mask_avatar.py, "
     "--adv-attack linfpgd, no --adaptive-epsilon); that loop only clamps "
     "ε. --select-regions is a FLAME subset inside load_gaussians, not "
-    "SemanticMask.from_parsing. Keep the hook on NeRSemble 306."
+    "SemanticMask.from_parsing. Keep the hook on NeRSemble 306. "
+    "Superseded by makeup.aegis_pgd_hook.install_makeup_pgd_hook, which "
+    "applies project_residual inside those steps when third_party/AEGIS "
+    "is bootstrapped."
 )
 
 
@@ -331,11 +336,12 @@ def projected_pgd_step(
     stops. This applies the same sign step, then ``project_residual``.
     ``grad_sign`` may be a raw gradient; only its sign is used.
 
-    TODO(james): call this after the sign update in
-    ``third_party/AEGIS/src/aegis/core/helpers.py``
-    (``adaptive_linf_pgd_attack``) and from ``AEGIS._run_foolbox_attack``
-    in ``src/aegis/core/model.py``. B0-a on 306 used that Foolbox path
-    (``--adv-attack linfpgd``, no ``--adaptive-epsilon``).
+    ``makeup.aegis_pgd_hook.MakeupPgdHook.adaptive_step`` is this update
+    plus the per-element ε clamp from ``adaptive_linf_pgd_attack``.
+    ``MakeupPgdHook.foolbox_project`` is the Foolbox L∞ project plus the
+    same ``project_residual``. ``install_makeup_pgd_hook`` patches those
+    two call sites when ``third_party/AEGIS`` is present. B0-a on 306
+    used Foolbox (``--adv-attack linfpgd``, no ``--adaptive-epsilon``).
     ``--select-regions`` is a FLAME subset, not this mask. Keep the hook
     on subject 306.
 
@@ -357,7 +363,10 @@ def projected_pgd_step(
 
 
 def aegis_pgd_hook_stub() -> str:
-    """Return the upstream hook note. Does not import or patch AEGIS."""
+    """Return the call-site note. Does not import or patch AEGIS.
+
+    Superseded by ``makeup.aegis_pgd_hook.install_makeup_pgd_hook``.
+    """
     return AEGIS_HOOK_TODO
 
 
@@ -439,6 +448,10 @@ def run_cpu_mask_smoke(
         and apply_unchanged
         and apply_matches
     )
+    # Local import: aegis_pgd_hook imports this module.
+    from makeup.aegis_pgd_hook import in_loop_leakage_report
+
+    leakage = in_loop_leakage_report(mask, epsilon, kind, steps=steps)
     path = None if resolved.path is None else str(resolved.path)
     return {
         "subject": SUBJECT,
@@ -457,8 +470,21 @@ def run_cpu_mask_smoke(
         "apply_outside_unchanged": apply_unchanged,
         "apply_matches_projected_delta": apply_matches,
         "support_fraction": float(np.mean(spatial > 0.0)),
-        "aegis_hook": "stub",
+        "aegis_hook": "in_loop",
+        "aegis_hook_api": "makeup.aegis_pgd_hook.install_makeup_pgd_hook",
         "aegis_hook_todo": aegis_pgd_hook_stub(),
+        "hooked_adaptive_outside_support_max_abs": leakage[
+            "hooked_adaptive_outside_support_max_abs"
+        ],
+        "epsilon_only_adaptive_outside_support_max_abs": leakage[
+            "epsilon_only_adaptive_outside_support_max_abs"
+        ],
+        "hooked_foolbox_outside_support_max_abs": leakage[
+            "hooked_foolbox_outside_support_max_abs"
+        ],
+        "epsilon_only_foolbox_outside_support_max_abs": leakage[
+            "epsilon_only_foolbox_outside_support_max_abs"
+        ],
     }
 
 
@@ -602,7 +628,7 @@ def _log_tail(text: str) -> str:
     return tail
 
 
-def smoke_note(smoke: dict, launch: dict) -> str:
+def smoke_note(smoke: dict, launch: dict, attach: Optional[dict] = None) -> str:
     """One-paragraph summary for the tracked JSON/CSV."""
     if smoke["mask_source"] == "documented_fallback":
         origin = (
@@ -619,8 +645,8 @@ def smoke_note(smoke: dict, launch: dict) -> str:
     if launch.get("launched"):
         gpu = (
             f"mask_avatar.py was started (return_code={launch.get('return_code')}). "
-            "That process is the original 306 Foolbox path and does not multiply "
-            "by M."
+            "It multiplies by M only when the makeup hook config is already "
+            "installed in that AEGIS root."
         )
     else:
         gpu = "GPU mask_avatar was not started."
@@ -631,7 +657,21 @@ def smoke_note(smoke: dict, launch: dict) -> str:
         "NeRSemble 306 makeup-mask smoke enforced supp(delta) ⊆ M and "
         f"||delta||_inf ≤ {smoke['epsilon']} on a CPU projected L∞ step "
         f"({smoke['kind']}). {origin} {gpu} "
-        "The in-loop AEGIS hook is a stub; see makeup/aegis_mask.py TODO(james)."
+        "In-loop projection is makeup.aegis_pgd_hook.MakeupPgdHook: "
+        "project_residual runs inside adaptive_linf_pgd_attack after the "
+        "sign step and ε clamp, and inside Foolbox L∞ project from "
+        "_run_foolbox_attack. Hooked outside-support max |delta| is "
+        f"{smoke.get('hooked_adaptive_outside_support_max_abs')} (adaptive) "
+        f"and {smoke.get('hooked_foolbox_outside_support_max_abs')} (Foolbox); "
+        "ε-clamp-only leaks "
+        f"{smoke.get('epsilon_only_adaptive_outside_support_max_abs')} and "
+        f"{smoke.get('epsilon_only_foolbox_outside_support_max_abs')}. "
+        + (
+            (attach.get("note") + " ")
+            if attach and attach.get("note")
+            else "AEGIS attach was not requested. "
+        )
+        + "Do not open an AutoDL GPU masking run until the mentor greenlights it."
     )
 
 
