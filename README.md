@@ -58,7 +58,7 @@ python src/baselines/b0_aegis_reproduce.py
 AEGIS 的 Foolbox L∞ PGD（B0-a 那条，`AEGIS._run_foolbox_attack`）和 `--adaptive-epsilon` 用的 `adaptive_linf_pgd_attack` 原文都只做 ε 裁剪。`--select-regions` 是 FLAME 区域子集，不是 `from_parsing`。妆容约束仍是 `project_residual`。步内钩子在 `makeup/aegis_pgd_hook.py`（接上 PR #10 留给 james 的两个调用点，不再只是 stub）：
 
 - `helpers.py` 的 `adaptive_linf_pgd_attack`：符号步和逐高斯 ε 裁剪之后调用 `project_residual`。
-- `model.py` 的 `AEGIS._run_foolbox_attack`：B0-a 的 `linfpgd` 走 Foolbox `LinfProjectedGradientDescentAttack.project`（`x0 + clip(x-x0, ±ε)`）。补丁在 `attack(...)` 之前换上 `project`，每一步对残差做同一次投影。
+- `model.py` 的 `AEGIS._run_foolbox_attack`：B0-a 的 `linfpgd` 走 Foolbox `LinfProjectedGradientDescentAttack.project`（`x0 + clip(x-x0, ±ε)`）。补丁在 `attack(...)` 之前换上 `project`，并把 `self.gaussians` 传进去。图像上的 `M` 先按高斯均值采样成 `(N,)`，每一步再对 DC 残差做同一次投影。
 
 `install_makeup_pgd_hook` 只在已经有 `third_party/AEGIS` 时改那两个文件，并写入 `.gs_makeup_hook.json`。树不在时状态是 `tree_missing`，不克隆、不下载。`documented_fallback` 默认拒绝装进真实攻击。不要在导师点头前开 AutoDL GPU。细节见 `makeup/README.md`。
 
@@ -152,7 +152,11 @@ python scripts/nersemble306_makeup_mask_smoke.py \
   --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
 ```
 
-`--launch` 只在 uv、CUDA、306 ply/png、AdaFace checkpoint、InsightFace `det_10g.onnx`、`GaussianAvatars` 都已经在盘上时才启动上面的命令。缺任何一项就跳过，避免脚本自己去下载。先用真实 `306.npy` 跑 `--arm-hook`，再在 `third_party/AEGIS` 目录里启动，步内才会乘妆容 mask。没装钩子时进程仍是原文 Foolbox，CPU 冒烟里的投影才是支撑约束。不要在导师点头前开这次 GPU。
+B0-a 的 Foolbox 残差是 DC，形状 `(N, 1, 3)`（306 上 N=89021）。真实 `parsing/306.npy` 仍是语义来源，形状 `(H, W)` = `(540, 960)`，与正面渲染 `renders/306.png` 对齐。`--arm-hook` 用 `SemanticMask.from_parsing` 得到妆容 `M`（`DEFAULT_PARSING_LABELS` 不含鼻尖 id 10），再把它采样成与 DC 同行的 `(N,)` 掩码，钩子 `kind=dc`。
+
+采样相机与 `AEGIS._init_orbit_cam` 相同：`OrbitCamera(960, 540, r=1, fovy=20, convention="opencv")`，单位旋转、看向原点。像素用 GaussianAvatars / 3DGS 的 `ndc2Pix`（像素 `i` 的中心在连续坐标 `i`）。带 FLAME `binding_0` 的 ply 里 `xyz` 是面片局部偏移；`(N,)` 在 `mask_avatar` 进程里、第一次 Foolbox `project` 之前，用已经加载的 `gaussians.get_xyz`（和光栅化器同一个均值）采样。这样 DC 残差和妆容掩码的形状对齐。
+
+改完后在 AutoDL 上重跑这条命令装钩子（超参仍是原来的 B0-a：AdaFace，eps=0.1，300 steps，target-features DC，linfpgd），再到 `third_party/AEGIS` 下执行上面的 `mask_avatar.py`。同一条命令如果带上 `--launch`，会先装钩子再启动。`--launch` 只在 uv、CUDA、306 ply/png、AdaFace checkpoint、InsightFace `det_10g.onnx`、`GaussianAvatars` 都已经在盘上时才启动。缺任何一项就跳过，避免脚本自己去下载。没装钩子时进程仍是原文 Foolbox，CPU 冒烟里的投影才是支撑约束。不要在导师点头前开这次 GPU。
 
 ```bash
 python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \

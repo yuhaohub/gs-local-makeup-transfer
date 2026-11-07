@@ -22,6 +22,13 @@ AEGIS and does not download weights or FaceScape. With no checkout, the
 numpy steps below still run and ``locate_aegis_call_sites`` reports
 ``tree_missing``.
 
+B0-a attacks DC features, shape ``(N, 1, 3)``. A BiSeNet map is ``(H, W)``.
+``dc_hook_from_parsing`` keeps that map as the semantic source and arms
+``kind=dc``. The per-Gaussian mask is ``M`` sampled at
+``project_gaussian_means`` (frontal ``OrbitCamera``, ``ndc2Pix``). When the
+ply stores FLAME-local offsets, the sample uses ``gaussians.get_xyz``
+inside the patched Foolbox bind, before the first ``project``.
+
 ``aegis_pgd_hook_stub`` remains the call-site note from PR #10. This
 module is the hook that note asked for.
 """
@@ -34,8 +41,14 @@ from pathlib import Path
 from typing import Optional, Union
 
 from makeup._numpy import require_numpy
-from makeup.aegis_mask import assert_subject_306, support_violation
-from makeup.mask import ArrayLike, as_mask_array
+from makeup.aegis_mask import (
+    FRONTAL_FOVY_DEG,
+    assert_subject_306,
+    b0a_camera_radius,
+    sample_image_mask,
+    support_violation,
+)
+from makeup.mask import ArrayLike, SemanticMask, as_mask_array
 from makeup.residual import MaskLike, project_residual
 
 # Blob the anchors below were read from. Not a submodule pin.
@@ -73,8 +86,12 @@ FOOLBOX_ATTACK_PATCHED = (
     "            steps=self.attack_steps,\n"
     "            random_start=False,\n"
     "        )\n"
-    "        attack = _gs_makeup_bind_foolbox_attack(attack)\n"
+    "        attack = _gs_makeup_bind_foolbox_attack(attack, self.gaussians, self.mask)\n"
 )
+FOOLBOX_BIND_CALL = (
+    "        attack = _gs_makeup_bind_foolbox_attack(attack, self.gaussians, self.mask)\n"
+)
+FOOLBOX_BIND_CALL_LEGACY = "        attack = _gs_makeup_bind_foolbox_attack(attack)\n"
 
 HELPERS_TAIL = f'''
 {TAIL_BEGIN}
@@ -116,12 +133,16 @@ def _gs_makeup_project_delta(delta):
 
 MODEL_TAIL = f'''
 {TAIL_BEGIN}
-def _gs_makeup_bind_foolbox_attack(attack):
+def _gs_makeup_bind_foolbox_attack(attack, gaussians=None, attacked_mask=None):
     """Bind project_residual into Foolbox L∞ PGD.project for this attack.
 
     Called from AEGIS._run_foolbox_attack before attack(...). Only
     LinfProjectedGradientDescentAttack is wrapped. Other attack names
     are returned unchanged. No-op when no hook config is present.
+
+    When the armed mask is still the image parsing, gaussians.get_xyz
+    (and attacked_mask, AEGIS self.mask) lifts it to one weight per
+    attacked Gaussian before the first Foolbox step.
     """
     import os
     from pathlib import Path
@@ -144,7 +165,7 @@ def _gs_makeup_bind_foolbox_attack(attack):
         sys.path.insert(0, root)
     from makeup.aegis_pgd_hook import bind_foolbox_attack
 
-    return bind_foolbox_attack(attack)
+    return bind_foolbox_attack(attack, gaussians, attacked_mask)
 {TAIL_END}
 '''
 
@@ -181,15 +202,37 @@ class MakeupPgdHook:
         *,
         kind: str = "dc",
         subject: Union[str, int] = "306",
+        semantic_source: str = "per-gaussian-labels",
+        image_mask: Optional[ArrayLike] = None,
+        camera: Optional[dict] = None,
+        dc_mask_lift: str = "per-gaussian-labels",
     ) -> None:
         if epsilon < 0:
             raise ValueError("epsilon must be >= 0")
         if kind not in {"dc", "rgb"}:
             raise ValueError(f"kind must be 'dc' or 'rgb', got {kind!r}")
+        if semantic_source not in {"per-gaussian-labels", "image-parsing"}:
+            raise ValueError(
+                "semantic_source must be 'per-gaussian-labels' or "
+                f"'image-parsing', got {semantic_source!r}"
+            )
         self.subject = assert_subject_306(subject)
         self.epsilon = float(epsilon)
         self.kind = kind
         self.mask = mask
+        self.semantic_source = semantic_source
+        self.dc_mask_lift = str(dc_mask_lift)
+        self.camera = None if camera is None else dict(camera)
+        if image_mask is None:
+            self.image_mask = None
+        else:
+            np = require_numpy()
+            grid = np.asarray(image_mask, dtype=np.float64)
+            if grid.ndim != 2:
+                raise ValueError(
+                    f"image mask must have shape (H, W), got {grid.shape}"
+                )
+            self.image_mask = grid
 
     def project_like(self, delta: ArrayLike) -> ArrayLike:
         """``project_residual`` on ``delta``, preserving array type and shape.
@@ -202,10 +245,19 @@ class MakeupPgdHook:
         - ``(H, W, 3)`` and ``(1, H, W, 3)`` — RGB
 
         Raises:
-            ValueError: the shape is not one of those layouts, or ``M``
-                does not match the spatial grid.
+            ValueError: the shape is not one of those layouts, ``M``
+                does not match the spatial grid, or a DC hook still holds
+                an ``(H, W)`` parsing map.
             ImportError: NumPy is not installed.
         """
+        spatial = _spatial_from_mask(self.mask)
+        if self.kind == "dc" and getattr(spatial, "ndim", 0) != 1:
+            raise ValueError(
+                "DC makeup hook has mask shape "
+                f"{tuple(spatial.shape)}. B0-a residuals are (N, 1, 3) or "
+                "(1, N, 1, 3); sample the image mask at Gaussian means "
+                "before this step."
+            )
         backend = _array_backend(delta)
         if backend == "torch":
             restored = self._project_numpy(delta.detach().cpu().numpy())
@@ -545,7 +597,7 @@ def locate_aegis_call_sites(aegis_root: Path) -> dict:
     report["foolbox_anchor"] = FOOLBOX_ATTACK_ANCHOR in model_text
     report["adaptive_patched"] = "delta_new = _gs_makeup_project_delta(delta_new)" in helpers_text
     report["foolbox_patched"] = (
-        "attack = _gs_makeup_bind_foolbox_attack(attack)" in model_text
+        "attack = _gs_makeup_bind_foolbox_attack(attack" in model_text
     )
     if report["adaptive_patched"] and report["foolbox_patched"]:
         report["status"] = "patched"
@@ -580,10 +632,34 @@ def _replace_once(text: str, old: str, new: str, label: str) -> str:
     return text.replace(old, new, 1)
 
 
+def _replace_tail(text: str, tail: str) -> str:
+    """Insert ``tail`` or replace an existing makeup tail. Idempotent."""
+    block = tail if tail.startswith("\n") else "\n" + tail
+    if not block.endswith("\n"):
+        block += "\n"
+    begin = text.find(TAIL_BEGIN)
+    if begin == -1:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        return text + block
+    end = text.find(TAIL_END, begin)
+    if end == -1:
+        raise ValueError("makeup hook tail is missing its end marker")
+    end += len(TAIL_END)
+    if end < len(text) and text[end] == "\n":
+        end += 1
+    prefix = text[:begin]
+    if prefix.endswith("\n"):
+        prefix = prefix[:-1]
+    return prefix + block
+
+
 def patch_aegis_sources(helpers_text: str, model_text: str) -> tuple[str, str]:
     """Return patched source text. Raises if an unpatched anchor is missing.
 
-    Already-inserted calls are left in place.
+    Already-inserted calls are left in place. A Foolbox bind that does not
+    receive ``self.gaussians`` is upgraded so an image parsing map can be
+    lifted onto the DC residual before the first step.
     """
     if "delta_new = _gs_makeup_project_delta(delta_new)" not in helpers_text:
         helpers_text = _replace_once(
@@ -592,22 +668,21 @@ def patch_aegis_sources(helpers_text: str, model_text: str) -> tuple[str, str]:
             ADAPTIVE_CLAMP_PATCHED,
             "adaptive_linf_pgd_attack",
         )
-    if TAIL_BEGIN not in helpers_text:
-        if not helpers_text.endswith("\n"):
-            helpers_text += "\n"
-        helpers_text += HELPERS_TAIL
+    helpers_text = _replace_tail(helpers_text, HELPERS_TAIL)
 
-    if "attack = _gs_makeup_bind_foolbox_attack(attack)" not in model_text:
-        model_text = _replace_once(
-            model_text,
-            FOOLBOX_ATTACK_ANCHOR,
-            FOOLBOX_ATTACK_PATCHED,
-            "AEGIS._run_foolbox_attack",
-        )
-    if TAIL_BEGIN not in model_text:
-        if not model_text.endswith("\n"):
-            model_text += "\n"
-        model_text += MODEL_TAIL
+    if FOOLBOX_BIND_CALL not in model_text:
+        if FOOLBOX_BIND_CALL_LEGACY in model_text:
+            model_text = model_text.replace(
+                FOOLBOX_BIND_CALL_LEGACY, FOOLBOX_BIND_CALL, 1
+            )
+        else:
+            model_text = _replace_once(
+                model_text,
+                FOOLBOX_ATTACK_ANCHOR,
+                FOOLBOX_ATTACK_PATCHED,
+                "AEGIS._run_foolbox_attack",
+            )
+    model_text = _replace_tail(model_text, MODEL_TAIL)
     return helpers_text, model_text
 
 
@@ -618,14 +693,25 @@ def _write_hook_config(hook: MakeupPgdHook, aegis_root: Path) -> Path:
     mask_path = root / MASK_NAME
     weight = np.asarray(as_mask_array(hook.mask), dtype=np.float64)
     np.save(mask_path, weight)
+    image_mask_path = None
+    if hook.image_mask is not None:
+        image_path = root / ".gs_makeup_image_mask.npy"
+        np.save(image_path, np.asarray(hook.image_mask, dtype=np.float64))
+        image_mask_path = str(image_path.resolve())
     config_path = root / CONFIG_NAME
     payload = {
         "version": 1,
         "subject": hook.subject,
         "epsilon": hook.epsilon,
         "kind": hook.kind,
+        "semantic_source": hook.semantic_source,
+        "dc_mask_lift": hook.dc_mask_lift,
+        "mask_domain": "dc" if weight.ndim == 1 else "image",
+        "mask_shape": [int(dim) for dim in weight.shape],
+        "camera": hook.camera,
         "repo_root": str(_repo_root()),
         "mask_npy": str(mask_path.resolve()),
+        "image_mask_npy": image_mask_path,
         "upstream_commit_verified": UPSTREAM_AEGIS_COMMIT,
         "call_sites": [
             "src/aegis/core/helpers.py:adaptive_linf_pgd_attack",
@@ -704,8 +790,17 @@ def install_makeup_pgd_hook(
         "note": (
             "Patched adaptive_linf_pgd_attack and AEGIS._run_foolbox_attack. "
             f"Config {config_path.name} arms project_residual for subject "
-            f"{hook.subject}, ε={hook.epsilon}, kind={hook.kind}. "
-            "Run mask_avatar from this AEGIS root, or set "
+            f"{hook.subject}, ε={hook.epsilon}, kind={hook.kind}, "
+            f"lift={hook.dc_mask_lift}, mask_shape="
+            f"{tuple(int(dim) for dim in _spatial_from_mask(hook.mask).shape)}. "
+            + (
+                "The (H, W) parsing stays the semantic source. "
+                "mask_avatar samples it at gaussians.get_xyz before the "
+                "first Foolbox step, producing a per-Gaussian DC mask. "
+                if hook.dc_mask_lift == "pending-get-xyz"
+                else "The armed mask matches the DC residual layout. "
+            )
+            + "Run mask_avatar from this AEGIS root, or set "
             f"{HOOK_CONFIG_ENV} to the config path. Do not start that GPU "
             "run until the mentor greenlights it."
         ),
@@ -746,7 +841,23 @@ def load_hook_from_config(path: Optional[Path] = None) -> Optional[MakeupPgdHook
     if not mask_path.is_file():
         raise ValueError(f"makeup hook mask is missing: {mask_path}")
     mask = np.load(mask_path, allow_pickle=False)
-    hook = MakeupPgdHook(mask, epsilon, kind=kind, subject=subject)
+    image_mask = None
+    image_path = meta.get("image_mask_npy")
+    if image_path:
+        image_file = Path(image_path)
+        if not image_file.is_file():
+            raise ValueError(f"makeup hook image mask is missing: {image_file}")
+        image_mask = np.load(image_file, allow_pickle=False)
+    hook = MakeupPgdHook(
+        mask,
+        epsilon,
+        kind=kind,
+        subject=subject,
+        semantic_source=str(meta.get("semantic_source", "per-gaussian-labels")),
+        image_mask=image_mask,
+        camera=meta.get("camera"),
+        dc_mask_lift=str(meta.get("dc_mask_lift", "per-gaussian-labels")),
+    )
     _CONFIG_CACHE_KEY = key
     _CONFIG_CACHE_HOOK = hook
     return hook
@@ -770,12 +881,179 @@ def project_configured_delta(delta: ArrayLike) -> ArrayLike:
     return hook.project_like(delta)
 
 
-def bind_foolbox_attack(attack):
+def _as_numpy_array(value):
+    np = require_numpy()
+    if hasattr(value, "detach"):
+        value = value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+def _attacked_means(gaussians, attacked_mask):
+    """``get_xyz`` in DC order, restricted to AEGIS ``self.mask`` when set."""
+    np = require_numpy()
+    if gaussians is None or not hasattr(gaussians, "get_xyz"):
+        raise ValueError("DC lift needs gaussians.get_xyz")
+    try:
+        points = _as_numpy_array(gaussians.get_xyz)
+    except Exception as exc:
+        raise ValueError(
+            "could not read gaussians.get_xyz to lift the image makeup mask"
+        ) from exc
+    if points.ndim == 3 and points.shape[1] == 1 and points.shape[2] == 3:
+        points = points[:, 0, :]
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError(f"gaussians.get_xyz must have shape (N, 3), got {points.shape}")
+    if attacked_mask is None:
+        return points
+    mask = _as_numpy_array(attacked_mask)
+    if mask.shape != (points.shape[0],):
+        raise ValueError(
+            f"attacked mask shape {mask.shape} does not match means {points.shape}"
+        )
+    if mask.dtype != np.bool_:
+        if not np.all((mask == 0) | (mask == 1)):
+            raise ValueError("attacked mask must be boolean")
+        mask = mask.astype(np.bool_)
+    return points[mask]
+
+
+def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> MakeupPgdHook:
+    """Return ``hook`` with a per-Gaussian mask when the source is an image.
+
+    ``per-gaussian-labels`` hooks are unchanged. An image parsing is sampled
+    at ``gaussians.get_xyz`` with the frontal OrbitCamera. Without
+    ``gaussians``, an already lifted ``(N,)`` mask is kept; an ``(H, W)``
+    mask raises so it is not applied to a DC residual.
+    """
+    if hook.semantic_source != "image-parsing":
+        return hook
+    if hook.image_mask is None:
+        raise ValueError("image-parsing DC hook is missing the (H, W) makeup mask")
+    if gaussians is None:
+        spatial = _spatial_from_mask(hook.mask)
+        if spatial.ndim == 1:
+            return hook
+        raise ValueError(
+            "DC hook still holds image mask "
+            f"{tuple(spatial.shape)}. Pass gaussians.get_xyz so it can be "
+            "sampled onto the (N, 1, 3) residual before Foolbox project."
+        )
+    camera = hook.camera or {}
+    radius = float(camera.get("radius", b0a_camera_radius()))
+    fovy = float(camera.get("fovy_deg", FRONTAL_FOVY_DEG))
+    lifted = sample_image_mask(
+        hook.image_mask,
+        _attacked_means(gaussians, attacked_mask),
+        radius=radius,
+        fovy_deg=fovy,
+    )
+    return MakeupPgdHook(
+        lifted,
+        hook.epsilon,
+        kind="dc",
+        subject=hook.subject,
+        semantic_source="image-parsing",
+        image_mask=hook.image_mask,
+        camera=hook.camera,
+        dc_mask_lift="projected-means",
+    )
+
+
+def dc_hook_from_parsing(
+    labels: ArrayLike,
+    epsilon: float,
+    means: Optional[ArrayLike] = None,
+    *,
+    subject: Union[str, int] = "306",
+    radius: Optional[float] = None,
+    fovy_deg: Optional[float] = None,
+) -> MakeupPgdHook:
+    """Arm a DC hook for B0-a from a parsing map.
+
+    ``(N,)`` labels become a per-Gaussian mask directly. ``(H, W)`` labels
+    go through ``SemanticMask.from_parsing`` (nose id 10 stays outside
+    ``M``). When ``means`` is provided they are projected with the frontal
+    OrbitCamera and ``M`` is sampled to ``(N,)``. When ``means`` is omitted
+    the image mask is stored and ``mask_avatar`` samples ``get_xyz`` before
+    the first Foolbox step. The hook kind is always ``dc``.
+    """
+    np = require_numpy()
+    grid = np.asarray(labels)
+    if grid.ndim == 1:
+        mask = SemanticMask.from_parsing(grid)
+        return MakeupPgdHook(
+            mask,
+            epsilon,
+            kind="dc",
+            subject=subject,
+            semantic_source="per-gaussian-labels",
+            dc_mask_lift="per-gaussian-labels",
+        )
+    if grid.ndim != 2:
+        raise ValueError(
+            f"parsing labels must have shape (N,) or (H, W), got {grid.shape}"
+        )
+    image = np.asarray(SemanticMask.from_parsing(grid).union(), dtype=np.float64)
+    chosen_radius = b0a_camera_radius() if radius is None else float(radius)
+    chosen_fovy = FRONTAL_FOVY_DEG if fovy_deg is None else float(fovy_deg)
+    camera = {
+        "width": int(image.shape[1]),
+        "height": int(image.shape[0]),
+        "radius": chosen_radius,
+        "fovy_deg": chosen_fovy,
+        "convention": "opencv",
+        "pixel": "ndc2Pix",
+    }
+    if means is None:
+        return MakeupPgdHook(
+            image,
+            epsilon,
+            kind="dc",
+            subject=subject,
+            semantic_source="image-parsing",
+            image_mask=image,
+            camera=camera,
+            dc_mask_lift="pending-get-xyz",
+        )
+    lifted = sample_image_mask(image, means, radius=chosen_radius, fovy_deg=chosen_fovy)
+    return MakeupPgdHook(
+        lifted,
+        epsilon,
+        kind="dc",
+        subject=subject,
+        semantic_source="image-parsing",
+        image_mask=image,
+        camera=camera,
+        dc_mask_lift="projected-means",
+    )
+
+
+def _invalidate_config_cache() -> None:
+    global _CONFIG_CACHE_KEY, _CONFIG_CACHE_HOOK
+    _CONFIG_CACHE_KEY = None
+    _CONFIG_CACHE_HOOK = None
+
+
+def _persist_hook_mask(hook: MakeupPgdHook) -> None:
+    """Rewrite the on-disk DC mask after a live ``get_xyz`` lift."""
+    if hook.semantic_source != "image-parsing":
+        return
+    config_path = resolve_hook_config_path()
+    if config_path is None:
+        return
+    _write_hook_config(hook, config_path.parent)
+    _invalidate_config_cache()
+
+
+def bind_foolbox_attack(attack, gaussians=None, attacked_mask=None):
     """Replace ``project`` on a Foolbox L∞ PGD attack. Other attacks pass through.
 
     The replacement calls the original ``project`` (ε clip) and then
     ``project_residual``. Foolbox looks up ``self.project`` on each step
     of ``BaseGradientDescent.run``.
+
+    An image-parsing hook is lifted with ``gaussians.get_xyz`` before that
+    wrapper is installed, so the first step already sees a per-Gaussian mask.
     """
     hook = current_hook()
     if hook is None or attack is None:
@@ -784,6 +1062,9 @@ def bind_foolbox_attack(attack):
         return attack
     if type(attack).__name__ != "LinfProjectedGradientDescentAttack":
         return attack
+    hook = ensure_dc_mask(hook, gaussians, attacked_mask)
+    arm_makeup_pgd_hook(hook)
+    _persist_hook_mask(hook)
     original = attack.project
 
     def project(x, x0, epsilon):

@@ -114,15 +114,20 @@ Otherwise `documented_fallback_labels` fills a label grid with the ids above and
 
 `install_makeup_pgd_hook` writes `.gs_makeup_hook.json` and `.gs_makeup_mask.npy` into the AEGIS root and inserts the calls above. It does not clone the tree. If `src/aegis/core/helpers.py` or `model.py` is missing, the status is `tree_missing`. If those files exist but the verified step text moved, the status is `anchors_mismatch` and nothing is written. `documented_fallback` is refused unless `allow_fallback=True` (that grid is not a parse of subject 306).
 
+B0-a attacks DC, so `--arm-hook` arms `kind=dc` even when `306.npy` is `(H, W)`. `SemanticMask.from_parsing` still builds `M` (nose id 10 stays outside `DEFAULT_PARSING_LABELS`). That image is sampled at the frontal render camera from `AEGIS._init_orbit_cam`: `OrbitCamera(960, 540, r=1, fovy=20, convention="opencv")`, identity orbit. Pixel coordinates are Gaussian splatting `ndc2Pix`, so each Gaussian mean picks up the makeup weight of the pixel it lands in. The result is an `(N,)` mask in the same order as `_features_dc` / the Foolbox residual `(N, 1, 3)` (unsqueezed to `(1, N, 1, 3)`).
+
+A ply that has `binding_0` stores face-local offsets in `xyz`, which are not the points the rasterizer draws. `load_gaussians` already turns those into `gaussians.get_xyz` before the attack. `--arm-hook` keeps the `(H, W)` mask as `semantic_source=image-parsing` and the patched `_run_foolbox_attack` samples `get_xyz` inside `bind_foolbox_attack`, before `attack(...)`. Means outside the image or behind the camera get weight 0. Re-run the arm command below after this change, then start the existing B0-a `mask_avatar.py` argv (AdaFace, eps=0.1, 300 steps, `target-features DC`, `linfpgd`). Passing `--launch` on the same command arms the hook first.
+
 Run `mask_avatar.py` from the AEGIS root so the config is picked up, or set `GS_MAKEUP_HOOK_CONFIG` to the json path. With no config, the inserted calls are no-ops. Do not start the AutoDL GPU run until the mentor greenlights it.
 
 ```bash
 python scripts/nersemble306_makeup_mask_smoke.py
-python scripts/nersemble306_makeup_mask_smoke.py --arm-hook --parsing path/to/306.npy
+python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
+  --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
 python makeup/tests/test_nersemble306_mask_smoke.py
 python makeup/tests/test_aegis_pgd_hook.py
 ```
 
-`--arm-hook` calls `install_makeup_pgd_hook`. A missing tree still exits 0 after the CPU projection and records `aegis_hook_attach=tree_missing`. Without a real parsing map it records `refused_fallback` and does not patch.
+`--arm-hook` calls `install_makeup_pgd_hook`. A missing tree still exits 0 after the CPU projection and records `aegis_hook_attach=tree_missing`. Without a real parsing map it records `refused_fallback` and does not patch. With a real `(H, W)` map the summary records `armed_hook_kind=dc`. `dc_mask_lift=projected-means` means the `(N,)` mask was written at arm time from unbound ply `xyz`. `dc_mask_lift=pending-get-xyz` (the NeRSemble 306 ply, which has `binding_0`) means `mask_avatar` builds that `(N,)` mask from `get_xyz` before the first Foolbox step.
 
 Run steps for the existing 306 ply/png and AdaFace weights on AutoDL are in the repo `README.md`. The makefile `mask_avatar` target is FaceScape 527; the 306 smoke does not call it.

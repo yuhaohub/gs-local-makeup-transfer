@@ -17,7 +17,15 @@ if str(_ROOT) not in sys.path:
 import numpy as np
 
 from makeup import SemanticMask
-from makeup.aegis_mask import documented_fallback_labels
+from makeup.aegis_mask import (
+    avatar_ply_path,
+    documented_fallback_labels,
+    load_b0a_dc_means,
+    means_at_pixels,
+    project_gaussian_means,
+    read_ply_xyz_binding,
+    _residual_layout,
+)
 from makeup.aegis_pgd_hook import (
     ADAPTIVE_CLAMP_ANCHOR,
     FOOLBOX_ATTACK_ANCHOR,
@@ -27,7 +35,10 @@ from makeup.aegis_pgd_hook import (
     MakeupPgdHook,
     bind_foolbox_attack,
     clear_hook_state,
+    dc_hook_from_parsing,
     epsilon_only_adaptive_step,
+    ensure_dc_mask,
+    load_hook_from_config,
     epsilon_only_foolbox_project,
     in_loop_leakage_report,
     install_makeup_pgd_hook,
@@ -41,6 +52,45 @@ _SCRIPT = _ROOT / "scripts" / "nersemble306_makeup_mask_smoke.py"
 
 def _fallback_mask() -> SemanticMask:
     return SemanticMask.from_parsing(documented_fallback_labels((12,)))
+
+
+def _write_bound_ply(path: Path, xyz: np.ndarray, binding: np.ndarray) -> None:
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {len(xyz)}\n"
+        "property float x\n"
+        "property float y\n"
+        "property float z\n"
+        "property float binding_0\n"
+        "end_header\n"
+    )
+    dtype = np.dtype(
+        [("x", "<f4"), ("y", "<f4"), ("z", "<f4"), ("binding_0", "<f4")]
+    )
+    table = np.zeros(len(xyz), dtype=dtype)
+    table["x"] = xyz[:, 0]
+    table["y"] = xyz[:, 1]
+    table["z"] = xyz[:, 2]
+    table["binding_0"] = binding
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(header.encode("ascii") + table.tobytes())
+
+
+def _write_ascii_ply(path: Path, xyz: np.ndarray) -> None:
+    lines = [
+        "ply",
+        "format ascii 1.0",
+        f"element vertex {len(xyz)}",
+        "property float x",
+        "property float y",
+        "property float z",
+        "end_header",
+    ]
+    for point in xyz:
+        lines.append(f"{point[0]} {point[1]} {point[2]}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="ascii")
 
 
 def _excerpt_tree(root: Path, helpers: str, model: str) -> None:
@@ -169,7 +219,9 @@ class AegisPgdHookTest(unittest.TestCase):
         self.assertLess(clamp, call)
         self.assertLess(call, clone)
         self.assertIn("project_configured_delta", patched_helpers)
-        bind = patched_model.index("_gs_makeup_bind_foolbox_attack(attack)")
+        bind = patched_model.index(
+            "_gs_makeup_bind_foolbox_attack(attack, self.gaussians, self.mask)"
+        )
         attack_call = patched_model.index("attack = get_foolbox_attack(")
         self.assertLess(attack_call, bind)
         self.assertIn("bind_foolbox_attack", patched_model)
@@ -266,6 +318,224 @@ class AegisPgdHookTest(unittest.TestCase):
                 before,
             )
             self.assertFalse((root / ".gs_makeup_hook.json").exists())
+
+    def test_frontal_origin_lands_on_the_306_render_pixel(self) -> None:
+        rows, cols, inside = project_gaussian_means(
+            np.zeros((1, 3)), 540, 960, radius=1.0, fovy_deg=20.0
+        )
+        self.assertTrue(bool(inside[0]))
+        self.assertEqual(int(rows[0]), 270)
+        self.assertEqual(int(cols[0]), 480)
+        aimed = means_at_pixels([12, 40], [18, 70], 540, 960, radius=1.0, fovy_deg=20.0)
+        back_rows, back_cols, back_inside = project_gaussian_means(
+            aimed, 540, 960, radius=1.0, fovy_deg=20.0
+        )
+        self.assertTrue(bool(np.all(back_inside)))
+        self.assertTrue(np.array_equal(back_rows, [12, 40]))
+        self.assertTrue(np.array_equal(back_cols, [18, 70]))
+        behind = project_gaussian_means(
+            np.array([[0.0, 0.0, 2.0]]), 540, 960, radius=1.0, fovy_deg=20.0
+        )
+        self.assertFalse(bool(behind[2][0]))
+
+    def test_hw_parsing_arms_a_dc_mask_for_the_n13_residual(self) -> None:
+        height, width = 8, 8
+        labels = np.zeros((height, width), dtype=np.int64)
+        labels[1, 2] = 12
+        labels[4, 4] = 10
+        self.assertEqual(_residual_layout(labels), ("rgb", (height, width, 3)))
+        means = means_at_pixels(
+            [1, 4],
+            [2, 4],
+            height,
+            width,
+            radius=1.0,
+            fovy_deg=20.0,
+        )
+        means = np.vstack([means, np.array([[0.0, 0.0, 2.0]])])
+        hook = dc_hook_from_parsing(labels, 0.1, means)
+        self.assertEqual(hook.kind, "dc")
+        self.assertEqual(hook.dc_mask_lift, "projected-means")
+        self.assertEqual(tuple(np.asarray(hook.mask).shape), (3,))
+        self.assertTrue(np.allclose(hook.mask, [1.0, 0.0, 0.0]))
+        delta = np.full((3, 1, 3), 0.4)
+        projected = np.asarray(hook.project_like(delta))
+        self.assertEqual(projected.shape, (3, 1, 3))
+        self.assertTrue(np.allclose(projected[0, 0], 0.1))
+        self.assertTrue(np.all(projected[1] == 0.0))
+        self.assertTrue(np.all(projected[2] == 0.0))
+        foolbox = np.asarray(hook.project_like(np.full((1, 3, 1, 3), -0.4)))
+        self.assertEqual(foolbox.shape, (1, 3, 1, 3))
+        self.assertTrue(np.allclose(foolbox[0, 0, 0], -0.1))
+        self.assertTrue(np.all(foolbox[0, 1] == 0.0))
+        self.assertEqual(outside_support_max_abs(projected, hook.mask, "dc"), 0.0)
+
+    def test_bound_ply_samples_get_xyz_before_the_dc_step(self) -> None:
+        height, width = 8, 8
+        labels = np.zeros((height, width), dtype=np.int64)
+        labels[1, 2] = 12
+        labels[4, 4] = 10
+        lip, nose = means_at_pixels(
+            [1, 4], [2, 4], height, width, radius=1.0, fovy_deg=20.0
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "AEGIS"
+            helpers, model = _ready_sources()
+            _excerpt_tree(root, helpers, model)
+            ply = avatar_ply_path(root)
+            ply.parent.mkdir(parents=True)
+            _write_bound_ply(ply, np.zeros((2, 3)), np.array([0, 1]))
+            xyz, binding = read_ply_xyz_binding(ply)
+            self.assertTrue(np.allclose(xyz, 0.0))
+            self.assertTrue(np.array_equal(binding, [0, 1]))
+            means, source = load_b0a_dc_means(root)
+            self.assertIsNone(means)
+            self.assertEqual(source, "flame-binding-deferred")
+
+            parsing = Path(tmp) / "306.npy"
+            np.save(parsing, labels)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(_SCRIPT),
+                    "--results-dir",
+                    str(Path(tmp) / "results"),
+                    "--aegis-root",
+                    str(root),
+                    "--parsing",
+                    str(parsing),
+                    "--arm-hook",
+                ],
+                cwd=_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            payload = json.loads(
+                (Path(tmp) / "results" / "nersemble306_makeup_mask_smoke.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(payload["armed_hook_kind"], "dc")
+            self.assertEqual(payload["dc_mask_lift"], "pending-get-xyz")
+            self.assertEqual(payload["dc_means_source"], "flame-binding-deferred")
+            self.assertEqual(payload["cpu_residual_kind"], "rgb")
+            config = json.loads((root / ".gs_makeup_hook.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["kind"], "dc")
+            self.assertEqual(config["semantic_source"], "image-parsing")
+            self.assertEqual(config["mask_domain"], "image")
+            stored = np.load(config["mask_npy"])
+            self.assertEqual(stored.shape, (height, width))
+
+            clear_hook_state()
+            os.environ[HOOK_CONFIG_ENV] = str(root / ".gs_makeup_hook.json")
+            pending = dc_hook_from_parsing(labels, 0.1, None)
+            with self.assertRaises(ValueError) as raised:
+                pending.project_like(np.full((2, 1, 3), 0.4))
+            self.assertIn("DC makeup hook", str(raised.exception))
+
+            class _Gaussians:
+                def __init__(self, xyz):
+                    self.get_xyz = np.asarray(xyz, dtype=np.float64)
+
+            gaussians = _Gaussians(np.vstack([lip, nose]))
+            model_ns: dict = {}
+            exec(MODEL_TAIL, model_ns)
+            attack = LinfProjectedGradientDescentAttack()
+            bound = model_ns["_gs_makeup_bind_foolbox_attack"](attack, gaussians, None)
+            origin = np.zeros((1, 2, 1, 3))
+            edited = np.asarray(bound.project(np.full_like(origin, 0.4), origin, 0.1))
+            self.assertEqual(edited.shape, origin.shape)
+            self.assertTrue(np.allclose(edited[0, 0, 0], 0.1))
+            self.assertTrue(np.all(edited[0, 1, 0] == 0.0))
+            lifted = np.load(config["mask_npy"])
+            self.assertEqual(lifted.shape, (2,))
+            self.assertTrue(np.allclose(lifted, [1.0, 0.0]))
+            rewritten = json.loads(
+                (root / ".gs_makeup_hook.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(rewritten["kind"], "dc")
+            self.assertEqual(rewritten["mask_domain"], "dc")
+
+            selected = ensure_dc_mask(
+                dc_hook_from_parsing(labels, 0.1, None),
+                _Gaussians(np.vstack([lip, nose, lip, nose])),
+                np.array([True, False, False, True]),
+            )
+            self.assertEqual(tuple(np.asarray(selected.mask).shape), (2,))
+            self.assertTrue(np.allclose(selected.mask, [1.0, 0.0]))
+
+    def test_legacy_bind_call_is_upgraded_to_pass_gaussians(self) -> None:
+        helpers, model = _ready_sources()
+        patched_helpers, patched_model = patch_aegis_sources(helpers, model)
+        legacy = patched_model.replace(
+            "_gs_makeup_bind_foolbox_attack(attack, self.gaussians, self.mask)",
+            "_gs_makeup_bind_foolbox_attack(attack)",
+        )
+        self.assertNotIn("self.gaussians", legacy)
+        upgraded_helpers, upgraded_model = patch_aegis_sources(patched_helpers, legacy)
+        self.assertIn(
+            "_gs_makeup_bind_foolbox_attack(attack, self.gaussians, self.mask)",
+            upgraded_model,
+        )
+        self.assertIn("gaussians=None", upgraded_model)
+        again_helpers, again_model = patch_aegis_sources(upgraded_helpers, upgraded_model)
+        self.assertEqual(again_model, upgraded_model)
+        self.assertEqual(again_helpers, upgraded_helpers)
+
+    def test_cli_arm_hook_installs_dc_mask_from_unbound_means(self) -> None:
+        height, width = 8, 8
+        labels = np.zeros((height, width), dtype=np.int64)
+        labels[1, 2] = 12
+        labels[4, 4] = 10
+        means = means_at_pixels([1, 4], [2, 4], height, width, radius=1.0, fovy_deg=20.0)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "AEGIS"
+            helpers, model = _ready_sources()
+            _excerpt_tree(root, helpers, model)
+            _write_ascii_ply(avatar_ply_path(root), means)
+            parsing = Path(tmp) / "306.npy"
+            np.save(parsing, labels)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(_SCRIPT),
+                    "--results-dir",
+                    str(Path(tmp) / "results"),
+                    "--aegis-root",
+                    str(root),
+                    "--parsing",
+                    str(parsing),
+                    "--arm-hook",
+                ],
+                cwd=_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr + proc.stdout)
+            payload = json.loads(
+                (Path(tmp) / "results" / "nersemble306_makeup_mask_smoke.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(payload["armed_hook_kind"], "dc")
+            self.assertEqual(payload["armed_hook_mask_shape"], [2])
+            self.assertEqual(payload["dc_mask_lift"], "projected-means")
+            self.assertEqual(payload["dc_means_source"], "ply-xyz")
+            config = json.loads((root / ".gs_makeup_hook.json").read_text(encoding="utf-8"))
+            self.assertEqual(config["kind"], "dc")
+            self.assertEqual(config["mask_domain"], "dc")
+            clear_hook_state()
+            hook = load_hook_from_config(root / ".gs_makeup_hook.json")
+            self.assertIsNotNone(hook)
+            assert hook is not None
+            projected = np.asarray(hook.project_like(np.full((2, 1, 3), 0.4)))
+            self.assertEqual(projected.shape, (2, 1, 3))
+            self.assertTrue(np.allclose(projected[0, 0], 0.1))
+            self.assertTrue(np.all(projected[1] == 0.0))
+            self.assertEqual(outside_support_max_abs(projected, hook.mask, "dc"), 0.0)
 
     def test_cli_arm_hook_degrades_without_aegis(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
