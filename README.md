@@ -17,7 +17,8 @@ makeup/              语义 mask 与自然性
 transfer/            DPA 代理 + 预处理 A
 eval/                API / mean_delta / 自然性协议
 baselines/midterm/   中期脚本（仅消融）
-docs/                只放一份交付文档
+docs/                交付文档 + gpu_launch_checklist.md
+assets/              MANIFEST.md（冻结名 ↔ AutoDL 路径）
 configs/ scripts/ results/
 ```
 
@@ -173,13 +174,27 @@ python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
 
 ## 新机
 
-资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。
+资产留在 `/root/autodl-fs/gs-assets/`，软链进工作区。冻结名、实验 ID 和路径以 `assets/MANIFEST.md` 为准；GPU 放行以 `docs/gpu_launch_checklist.md` 为准。本节不重列这两份文件。一次运行一个摘要槽，规则在 GPU 清单里。
+
+### 必搬（真相源）
+
+整份 `/root/autodl-fs/gs-assets/`：`weights/`、`avatars/`、`masks/`、`targets/`，以及资产根里的 `MANIFEST.md`。`runs/<run_id>/` 在同一根下，整棵搬走时一起走。优先把同一块 autodl-fs 重新挂上。不能挂时，`rsync` 整棵目录，再按仓库 `assets/MANIFEST.md` 的 sha256 和 bytes 核对。
+
+### 可重建（别当资产）
+
+这些在新机上重做，不当作资产搬走：
+
+- `autodl-tmp` 里的缓存。
+- uv 下载缓存 `uv-cache`。它只是可选加速，不是真相源。wheelhouse 同样只作备用。
+- 虚拟环境。不要把正在使用的 `.venv` 软链到另一台机器。同一代 CUDA 优先用**同一路径**的 venv tar（shebang 和 `pyvenv.cfg` 写的是绝对路径；#16 没有另给 tar 的文件路径）。否则按 lockfile 执行 `uv sync` 重建。AEGIS 仍在 `third_party/AEGIS` 里用 `uv pip install -e .`；FLAME 导入失败时再装 `chumpy`。
+
+### 新机三步
+
+1. 挂载同一块 autodl-fs，或 `rsync` `/root/autodl-fs/gs-assets/`，再按 `assets/MANIFEST.md` 核对 sha256 / bytes。挂上同一块盘就是快迁。只拷系统盘、不带这份资产根，不算迁完。
+2. `git clone` 或 `git pull` 到 `master`，再准备环境：按 lockfile 执行 `uv sync`，或按上面的同一路径解开 venv tar。
+3. `docs/gpu_launch_checklist.md` 全绿之前，不要加 `--launch`。
 
 代码不要在 NFS 上多个人同时写同一份工作区。文件存储上只放 bare / 只读 mirror，或者 `rsync` / `clone` 到本机工作区再改。
-
-环境：同一代 CUDA 优先用**同一路径**的 venv tar（shebang 和 `pyvenv.cfg` 写的是绝对路径）。`uv-cache` 或 wheelhouse 只作备用。不要把正在使用的 `.venv` 软链到另一台机器。
-
-安装：在 `third_party/AEGIS` 里用 `uv pip install -e .`。FLAME 导入失败时再装 `chumpy`。
 
 #15 合并后，DC 冒烟要重新装钩子再启动（超参仍是原来的 B0-a）：
 
@@ -246,10 +261,10 @@ python src/baselines/tests/test_b1_targeted_impersonation.py
 | C1 | 中期最优管线 |
 
 ## 协作约定
-1. 默认分支 `main`；功能分支 `feat/*`、`exp/*`。
-2. 一人一 PR；大结果与权重放 `results/` 本地或网盘，git 只跟踪小表 CSV/JSON。
+1. 默认分支 `master`；功能分支 `feat/*`、`exp/*`。
+2. 一人一 PR。一次运行只写 `results/<exp_id>/summary.{json,csv}` 和同目录日志，不覆盖已有摘要；机器侧副本在 `/root/autodl-fs/gs-assets/runs/<run_id>/`。大结果与权重放资产根或网盘，git 只跟踪小表 CSV/JSON。
 3. API 密钥用环境变量，禁止提交。
-4. 文档只改 `docs/创新章_交付文档_AEGIS底座.md` 这一份。
+4. 研究表述只改 `docs/创新章_交付文档_AEGIS底座.md`。资产清单是 `assets/MANIFEST.md`，GPU 门禁是 `docs/gpu_launch_checklist.md`。
 
 ## 本地路径
 本机共享盘：`/workspace/gs-local-makeup-transfer`
