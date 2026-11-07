@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Thin B0 gate. The summary schema belongs to src/baselines/b0_aegis_reproduce.py,
 # which writes results/b0_aegis_sanity_summary.json and .csv.
-# Tier-1 statuses deps_missing and gpu_required exit 0 (no CUDA / missing deps).
+# Formal B0 is the merged B0-a record: NeRSemble subject 306,
+# status=pipeline_ok, return_code=0. B0-b (FaceScape 527) is cancelled.
+# Tier-1 statuses deps_missing and gpu_required exit 0 only when the summary
+# is not a FaceScape 527 / B0-b record.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -10,19 +13,28 @@ cd "$ROOT"
 MODULE="src/baselines/b0_aegis_reproduce.py"
 SUMMARY_JSON="results/b0_aegis_sanity_summary.json"
 SUMMARY_CSV="results/b0_aegis_sanity_summary.csv"
+# Frozen formal subject. Do not wait for FaceScape 527.
+EXPECTED_SUBJECT="306"
 RUN_BOOTSTRAP=0
 
 usage() {
   cat <<'EOF'
 Usage: scripts/check_b0_gate.sh [--bootstrap]
 
-Checks the frozen scaffold, optionally clones third_party/AEGIS, then runs:
+Formal B0 subject is NeRSemble 306. The merged B0-a summary
+(status=pipeline_ok, return_code=0, subject=306) is the formal pass.
+B0-b (FaceScape 527) is cancelled and is not on the critical path.
+
+If results/b0_aegis_sanity_summary.json already records that pass, this
+gate exits 0 and does not re-run or rewrite the summary. Otherwise it
+checks the frozen scaffold, optionally clones third_party/AEGIS, then runs:
 
   python src/baselines/b0_aegis_reproduce.py
 
 That module writes results/b0_aegis_sanity_summary.json and
-results/b0_aegis_sanity_summary.csv. This gate prints the status and exits 0
-for tier-1 deps_missing / gpu_required (also bootstrap_required, not_run, ok).
+results/b0_aegis_sanity_summary.csv. A FaceScape 527 / B0-b record is not
+a pass. Other tier-1 deps_missing / gpu_required (also bootstrap_required,
+not_run, ok) still exit 0.
 
   --bootstrap   If third_party/AEGIS is missing, run scripts/00_bootstrap_aegis.sh.
 EOF
@@ -74,6 +86,100 @@ if ((${#missing[@]} > 0)); then
 fi
 echo "OK: scaffold directories present"
 
+# Prefer `python` as the B0 entry; python3 is the same module when `python` is absent.
+PY=""
+if command -v python >/dev/null 2>&1; then
+  PY="$(command -v python)"
+elif command -v python3 >/dev/null 2>&1; then
+  PY="$(command -v python3)"
+fi
+
+# formal | cancelled | reject | continue
+summary_verdict() {
+  local file="$1"
+  "$PY" - "$file" "$EXPECTED_SUBJECT" <<'PY'
+import json
+import sys
+
+path, expected = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    print("continue")
+    raise SystemExit(0)
+
+metrics = data.get("metrics") if isinstance(data.get("metrics"), dict) else {}
+status = str(data.get("status") or "")
+raw_subject = data.get("subject")
+subject = "" if raw_subject is None else str(raw_subject).strip()
+return_code = metrics.get("return_code")
+experiment = str(data.get("experiment_id") or "")
+avatar = str(metrics.get("avatar_dir") or "")
+target = str(metrics.get("target_image") or "")
+facescape = (
+    experiment == "B0-b"
+    or subject == "527"
+    or "FaceScape" in avatar
+    or "FaceScape" in target
+    or "/527" in avatar
+    or avatar.rstrip("/").endswith("/527")
+    or "/527" in target
+    or target.endswith("/527.png")
+)
+formal = (
+    status == "pipeline_ok"
+    and subject == expected
+    and str(return_code) == "0"
+    and experiment != "B0-b"
+    and not facescape
+)
+if formal:
+    print("formal")
+elif facescape:
+    print("cancelled")
+elif status == "pipeline_ok":
+    print("reject")
+else:
+    print("continue")
+PY
+}
+
+apply_summary_verdict() {
+  local verdict="$1"
+  case "$verdict" in
+    formal)
+      echo "B0 gate status=pipeline_ok"
+      echo "B0 gate: formal pass (NeRSemble subject=${EXPECTED_SUBJECT}, status=pipeline_ok, return_code=0)"
+      echo "B0-a is the formal B0. B0-b (FaceScape 527) is cancelled and is not on the critical path."
+      echo "summary: ${SUMMARY_JSON}"
+      echo "summary: ${SUMMARY_CSV}"
+      exit 0
+      ;;
+    cancelled)
+      echo "ERROR: B0-b (FaceScape 527) is cancelled and is not a B0 pass." >&2
+      echo "Formal B0 is NeRSemble subject=${EXPECTED_SUBJECT}, status=pipeline_ok, return_code=0." >&2
+      exit 1
+      ;;
+    reject)
+      echo "ERROR: summary is not the formal B0 pass." >&2
+      echo "Need status=pipeline_ok, return_code=0, subject=${EXPECTED_SUBJECT}." >&2
+      exit 1
+      ;;
+    continue)
+      ;;
+    *)
+      echo "ERROR: could not read ${SUMMARY_JSON}" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# Recorded B0-a is the formal pass. Do not re-run: the reproduce module still
+# preflights the upstream makefile default (FaceScape 527) and would rewrite it.
+if [[ -n "$PY" && -f "$ROOT/$SUMMARY_JSON" ]]; then
+  apply_summary_verdict "$(summary_verdict "$ROOT/$SUMMARY_JSON")"
+fi
+
 aegis_dir="$ROOT/third_party/AEGIS"
 if [[ ! -d "$aegis_dir/.git" ]]; then
   echo "third_party/AEGIS is missing."
@@ -98,14 +204,6 @@ if [[ ! -d "$aegis_dir/.git" ]]; then
   fi
 fi
 
-# Prefer `python` as the B0 entry; python3 is the same module when `python` is absent.
-PY=""
-if command -v python >/dev/null 2>&1; then
-  PY="$(command -v python)"
-elif command -v python3 >/dev/null 2>&1; then
-  PY="$(command -v python3)"
-fi
-
 finish_status() {
   local status="$1"
   echo "B0 gate status=${status}"
@@ -116,6 +214,10 @@ finish_status() {
       ;;
     bootstrap_required|not_run|ok)
       exit 0
+      ;;
+    pipeline_ok)
+      echo "ERROR: status=pipeline_ok is the formal B0 pass only for NeRSemble subject=${EXPECTED_SUBJECT} and return_code=0." >&2
+      exit 1
       ;;
     *)
       echo "ERROR: unexpected B0 status: ${status}" >&2
@@ -134,9 +236,14 @@ if [[ -f "$ROOT/$MODULE" && -n "$PY" ]]; then
     echo "ERROR: python src/baselines/b0_aegis_reproduce.py exited ${rc}" >&2
     exit "$rc"
   fi
+  recorded="$(summary_verdict "$ROOT/$SUMMARY_JSON")"
+  if [[ "$recorded" != "continue" ]]; then
+    apply_summary_verdict "$recorded"
+  fi
   status="$("$PY" -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["status"])' "$ROOT/$SUMMARY_JSON")"
   echo "summary: ${SUMMARY_JSON}"
   echo "summary: ${SUMMARY_CSV}"
+  echo "note: formal B0 subject is NeRSemble ${EXPECTED_SUBJECT}. B0-b (FaceScape 527) is cancelled."
   finish_status "$status"
 fi
 
@@ -173,7 +280,7 @@ if [[ "$bootstrapped" == "1" ]]; then
   fi
 fi
 
-note="Run: python src/baselines/b0_aegis_reproduce.py. That writes ${SUMMARY_JSON} and ${SUMMARY_CSV}."
+note="Formal B0 subject is NeRSemble 306 (status=pipeline_ok, return_code=0). B0-b FaceScape 527 is cancelled and is not on the critical path. Run: python src/baselines/b0_aegis_reproduce.py. That writes ${SUMMARY_JSON} and ${SUMMARY_CSV}."
 if [[ ! -f "$ROOT/$MODULE" ]]; then
   note="src/baselines/b0_aegis_reproduce.py is not on this tree. ${note}"
 elif [[ -z "$PY" ]]; then
@@ -208,6 +315,7 @@ elif status == "gpu_required":
 payload = {
     "experiment_id": "B0",
     "desc": "AEGIS original de-identification",
+    "subject": "306",
     "status": status,
     "bootstrapped": os.environ.get("B0_BOOTSTRAPPED") == "1",
     "metrics": {

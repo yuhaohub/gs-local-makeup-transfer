@@ -32,12 +32,14 @@ git submodule add https://github.com/Woleek/AEGIS.git third_party/AEGIS
 
 ## B0 gate
 
-`scripts/check_b0_gate.sh` 检查冻结目录；`third_party/AEGIS` 不在时提示 `scripts/00_bootstrap_aegis.sh`（`--bootstrap` 会执行它）。然后调用 `python src/baselines/b0_aegis_reproduce.py`，由该模块写入摘要（门禁不另起一套字段）：
+正式复现主体冻结为 **NeRSemble 306**。已合并的 B0-a（`subject=306`，`status=pipeline_ok`，`return_code=0`）就是正式 B0。**B0-b（FaceScape 527）已取消**，不在关键路径上，门禁不再等待该主体。
 
-- `results/b0_aegis_sanity_summary.json`：`experiment_id`, `desc`, `status`, `bootstrapped`, `metrics`, `note`
-- `results/b0_aegis_sanity_summary.csv`：`experiment_id,status,bootstrapped,command,return_code,note`
+`scripts/check_b0_gate.sh` 检查冻结目录。若 `results/b0_aegis_sanity_summary.json` 已是上述正式记录，门禁直接通过，不重跑、不改写摘要。否则在 `third_party/AEGIS` 不在时提示 `scripts/00_bootstrap_aegis.sh`（`--bootstrap` 会执行它），然后调用 `python src/baselines/b0_aegis_reproduce.py`，由该模块写入摘要（门禁不另起一套字段）：
 
-`status` 取 `bootstrap_required`、`deps_missing`、`gpu_required`、`not_run`、`ok`。缺依赖或无 CUDA（`deps_missing` / `gpu_required`）时门禁退出码为 0。
+- `results/b0_aegis_sanity_summary.json`：`experiment_id`, `desc`, `status`, `subject`, `bootstrapped`, `metrics`, `note`
+- `results/b0_aegis_sanity_summary.csv`：`experiment_id,status,subject,pipeline_ok,bootstrapped,command,return_code,note`
+
+正式通过条件：`status=pipeline_ok` 且 `return_code=0` 且 `subject=306`。`status` 另可取 `bootstrap_required`、`deps_missing`、`gpu_required`、`not_run`、`ok`。缺依赖或无 CUDA（`deps_missing` / `gpu_required`）且摘要不是 FaceScape 527 / B0-b 时，门禁退出码仍为 0；这不是正式 B0。
 
 ```bash
 bash scripts/check_b0_gate.sh
@@ -48,7 +50,7 @@ python src/baselines/b0_aegis_reproduce.py
 ## 实验矩阵（提交代码时对齐）
 | ID | 含义 |
 |----|------|
-| B0 | AEGIS 原文去身份复现 |
+| B0 | AEGIS 原文去身份复现（正式主体 NeRSemble 306；B0-b / FaceScape 527 已取消） |
 | B1 | 同接口改定向冒充（全脸） |
 | B2 | + 妆容 mask + 幅度约束 |
 | M  | + DPA + 预处理不变（主方法） |
