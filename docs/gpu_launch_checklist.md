@@ -1,8 +1,10 @@
 # GPU launch checklist
 
 bob enforces this before any AutoDL GPU run. james adds `--launch` only after
-bob greenlights. This checklist does not enable B2, does not change attack
-code, and does not download datasets.
+bob greenlights. B2 wiring may merge. A GPU run, including B2, still requires
+all four gates green: gates 1–3 first, then mentor authorization (gate 4).
+This checklist does not change attack code, does not pass `--launch` by
+default, and does not download datasets.
 
 Research wording stays in `docs/创新章_交付文档_AEGIS底座.md`. Asset paths stay
 in `assets/MANIFEST.md`.
@@ -43,6 +45,7 @@ Frozen names already on disk:
    - B0-a: `results/b0_aegis_sanity_summary.json` and `.csv` (`pipeline_ok`, subject 306)
    - B1 celeba wiring: `results/b1_targeted_impersonation_summary.json` and `.csv` (not launched)
    - 306 makeup-mask CPU smoke: `results/nersemble306_makeup_mask_smoke.json` and `.csv` (not B2)
+   - B2 write targets are not those flat files. One still, one directory: `results/b2_celeba_T0/summary.json` and `summary.csv`, and later `results/b2_lfw_T0/`. A wiring record there has `pipeline_ok` false and null measurements. That record is not a finished attack and does not by itself clobber gate 3. The authorized run of that same still updates the same directory. The post-run gate is in the B2 section below. Wiring may merge; `--launch` still waits for gates 1–3 and then mentor gate 4.
 4. **Mentor authorizes only after gates 1–3 are green.**
 
 When all four are green, bob greenlights. Then james may `--launch`.
@@ -57,3 +60,23 @@ If any gate fails, bob refuses the GPU. No `--launch`.
 - [ ] Gate 3: `results/<exp_id>/` has no `summary.json`, `summary.csv`, or log. The historical flat summaries above are untouched.
 - [ ] Machine log and summary for this run go to `/root/autodl-fs/gs-assets/runs/<run_id>/`. `autodl-tmp` is cache only.
 - [ ] Ask bob. Wait for mentor (gate 4) and for bob's greenlight before `--launch`.
+
+## B2
+
+Wiring may merge. This section does not start a GPU run and does not add `--launch` to the default command. GPU, including B2, still requires all four gates green: gates 1–3, then mentor gate 4. The CLI is in the README「B2」section.
+
+| still | summary directory |
+| --- | --- |
+| `celeba_T0.jpg` (first) | `results/b2_celeba_T0/summary.json` and `summary.csv` |
+| `lfw_T0.jpg` (later) | `results/b2_lfw_T0/summary.json` and `summary.csv` |
+
+The wiring record in that directory has `pipeline_ok` false and null measurements. It is not a finished attack. The authorized run of that same still updates the same directory. A second finished run needs a new directory.
+
+**Post-run gate** (bob freeze). Judge this on the summary after the run. The wiring record leaves these empty and is not a pass. Do not fill them with invented GPU numbers.
+
+| check | pass |
+| --- | --- |
+| `pipeline_ok` | true |
+| cos(adv, source) | ↓ relative to goal (`cos_adv_source`) |
+| cos(adv, T) | ↑ (`cos_adv_target`) |
+| outside-M `\|δ\|` | 0 (`outside_m_abs_delta`) |
