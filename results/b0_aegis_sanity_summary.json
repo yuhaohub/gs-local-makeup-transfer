@@ -1,28 +1,30 @@
 {
-  "experiment_id": "B0",
-  "desc": "AEGIS original de-identification",
-  "status": "deps_missing",
+  "experiment_id": "B0-a",
+  "desc": "AEGIS original de-identification on public NeRSemble demo subject 306",
+  "status": "pipeline_ok",
+  "pipeline_ok": true,
+  "subject": "306",
   "bootstrapped": true,
   "metrics": {
-    "command": "make mask_avatar",
-    "command_attempted": false,
-    "return_code": null,
-    "log_tail": "",
-    "cuda_available": false,
-    "makefile": "third_party/AEGIS/makefile",
-    "mask_script": "third_party/AEGIS/scripts/mask_avatar.py",
+    "command": "uv run python scripts/mask_avatar.py --avatar-dir ./datasets/NeRSembleReconst/avatars/306 --target-image ./datasets/NeRSembleReconst/renders/306.png --camera-boundary-angles -0.5 0.5 -0.5 0.5 0.0 0.0 --angle-aggregation mean --seed 42 --epsilons 0.1 --attack-steps 300 --target-features DC --adv-attack linfpgd --embedder adaface --radius 1 --output-name NeRSembleMasked306",
+    "command_attempted": true,
+    "return_code": 0,
+    "cuda_available": true,
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "host": "connect.nmb1.seetacloud.com:32791",
     "embedder": "adaface",
-    "avatar_dir": "third_party/AEGIS/datasets/FaceScapeReconst/avatars/527",
-    "target_image": "third_party/AEGIS/datasets/FaceScapeReconst/renders/527.png",
-    "blockers": [
-      "deps_missing: uv is not on PATH (mask_avatar recipe starts with uv run)",
-      "deps_missing: recipe avatar input missing (third_party/AEGIS/datasets/FaceScapeReconst/avatars/527/point_cloud.ply)",
-      "deps_missing: recipe target image missing (third_party/AEGIS/datasets/FaceScapeReconst/renders/527.png)",
-      "deps_missing: embedder checkpoint missing (third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt); not downloaded",
-      "deps_missing: insightface detector missing (~/.insightface/models/buffalo_l/det_10g.onnx); running mask_avatar would auto-download it",
-      "deps_missing: GaussianAvatars checkout missing (third_party/AEGIS/GaussianAvatars)",
-      "gpu_required: CUDA device not available"
-    ]
+    "epsilon": 0.1,
+    "attack_steps": 300,
+    "radius": 1,
+    "aggregated_cosine_similarity": -0.2488,
+    "avatar_dir": "third_party/AEGIS/datasets/NeRSembleReconst/avatars/306",
+    "target_image": "third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png",
+    "output_avatar": "third_party/AEGIS/datasets/seed42/NeRSembleMasked306_adaface_all/eps_0.100/avatars/306/point_cloud.ply",
+    "output_render": "third_party/AEGIS/datasets/seed42/NeRSembleMasked306_adaface_all/eps_0.100/renders/306.png",
+    "output_avatar_bytes": 22434847,
+    "output_render_bytes": 161128,
+    "log_tail": "k Steps:  94%|█████████▍| 283/300 [03:11<00:10,  1.57step/s]\nFoolbox Attack Steps:  95%|█████████▍| 284/300 [03:11<00:09,  1.61step/s]\nFoolbox Attack Steps:  95%|█████████▌| 285/300 [03:12<00:09,  1.54step/s]\nFoolbox Attack Steps:  95%|█████████▌| 286/300 [03:13<00:08,  1.58step/s]\nFoolbox Attack Steps:  96%|█████████▌| 287/300 [03:13<00:08,  1.53step/s]\nFoolbox Attack Steps:  96%|█████████▌| 288/300 [03:14<00:07,  1.50step/s]\nFoolbox Attack Steps:  96%|█████████▋| 289/300 [03:15<00:07,  1.48step/s]\nFoolbox Attack Steps:  97%|█████████▋| 290/300 [03:15<00:06,  1.52step/s]\nFoolbox Attack Steps:  97%|█████████▋| 291/300 [03:16<00:05,  1.57step/s]\nFoolbox Attack Steps:  97%|█████████▋| 292/300 [03:17<00:05,  1.53step/s]\nFoolbox Attack Steps:  98%|█████████▊| 293/300 [03:17<00:04,  1.49step/s]\nFoolbox Attack Steps:  98%|█████████▊| 294/300 [03:18<00:04,  1.48step/s]\nFoolbox Attack Steps:  98%|█████████▊| 295/300 [03:19<00:03,  1.47step/s]\nFoolbox Attack Steps:  99%|█████████▊| 296/300 [03:19<00:02,  1.45step/s]\nFoolbox Attack Steps:  99%|█████████▉| 297/300 [03:20<00:01,  1.50step/s]\nFoolbox Attack Steps:  99%|█████████▉| 298/300 [03:21<00:01,  1.48step/s]\nFoolbox Attack Steps: 100%|█████████▉| 299/300 [03:21<00:00,  1.53step/s]\nFoolbox Attack Steps: 100%|██████████| 300/300 [03:22<00:00,  1.57step/s]\nFoolbox Attack Steps: 301step [03:23,  1.52step/s]                       \nFoolbox Attack Steps: 301step [03:23,  1.48step/s]\nEpsilon: 0.100 -> Aggregated Cosine Similarity: -0.2488\n",
+    "finished_at": "2026-11-07T11:52:58+08:00"
   },
-  "note": "B0 AEGIS original de-identification (§6.2 item 1) did not launch `make mask_avatar` (deps_missing). uv is not on PATH (mask_avatar recipe starts with uv run); recipe avatar input missing (third_party/AEGIS/datasets/FaceScapeReconst/avatars/527/point_cloud.ply); recipe target image missing (third_party/AEGIS/datasets/FaceScapeReconst/renders/527.png); embedder checkpoint missing (third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt); not downloaded; insightface detector missing (~/.insightface/models/buffalo_l/det_10g.onnx); running mask_avatar would auto-download it; GaussianAvatars checkout missing (third_party/AEGIS/GaussianAvatars); CUDA device not available. Eval targets were not run. No weights or datasets were downloaded. Bootstrap clone includes datasets/NeRSembleReconst avatar 306, used by other makefile targets; B0 stays on make mask_avatar."
+  "note": "B0-a NeRSemble subject=306 original AEGIS masking finished successfully (pipeline_ok). eps=0.1, attack_steps=300, radius=1, AdaFace; aggregated cosine similarity=-0.2488. Outputs under third_party/AEGIS/datasets/seed42/NeRSembleMasked306_adaface_all/eps_0.100/."
 }
