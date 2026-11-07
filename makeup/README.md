@@ -32,7 +32,7 @@ Other ids, including background `0`, eyeglasses `6`, nose `10`, inner mouth `11`
 
 ### NeRSemble 306 label map
 
-The NeRSemble demo does not ship `parsing/306.npy`. The approved way to build the real integer map for subject 306 is `scripts/make_nersemble306_parsing.py`. It runs BiSeNet from a local [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch) checkout (CelebAMask-HQ, 19 classes) and writes `(H, W)` `int64` labels. Those ids are `DEFAULT_PARSING_LABELS`: lip 12/13, eye 4/5, brow 2/3, skin 1 as cheek.
+The NeRSemble demo does not ship `parsing/306.npy`. The approved way to build the real integer map for subject 306 is `scripts/make_nersemble306_parsing.py`. It detects the face with the InsightFace `buffalo_l` / `det_10g.onnx` detector AEGIS already uses (`insightface.model_zoo.get_model`, RetinaFace/SCRFD `detect`; a separate `retinaface` package is not required), crops with a margin (default `0.25`, then square unless `--no-square`), runs BiSeNet from a local [face-parsing.PyTorch](https://github.com/zllrunning/face-parsing.PyTorch) checkout (CelebAMask-HQ, 19 classes) on that crop, and pastes the labels onto a zero canvas the size of the original image. The file is still `(H, W)` `int64`, aligned with `renders/306.png`. Ids are `DEFAULT_PARSING_LABELS`: lip 12/13, eye 4/5, brow 2/3, skin 1 as cheek. After the write, lip, eye, brow, and cheek must each have a pixel count greater than 0 (`SemanticMask.from_parsing`); otherwise the process exits 1 and the map is not accepted.
 
 ```bash
 git clone https://github.com/zllrunning/face-parsing.PyTorch.git third_party/face-parsing.PyTorch
@@ -45,7 +45,9 @@ python scripts/make_nersemble306_parsing.py
 python scripts/make_nersemble306_parsing.py --image /path/to/306.png --cpu
 ```
 
-Default image: `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png` when it is already on disk, otherwise `--image`. Default output: `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`. Alternate sidecar: `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy` (`--out`). The network input matches upstream `test.py` (bilinear resize to 512×512, ImageNet normalization, argmax of `net(img)[0]`). Labels are nearest-resized back to the source `H×W` so they line up with the render. CUDA is used only when it is already available; `--cpu` forces CPU. A missing checkout, checkpoint, or image exits 2 and names what is missing.
+Default image: `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png` when it is already on disk, otherwise `--image`. Default output: `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`. Alternate sidecar: `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy` (`--out`). The detector sees BGR `uint8` (`detect` assumes OpenCV order, `swapRB=True`). The crop is what BiSeNet sees. Network input on that crop matches upstream `test.py` (bilinear resize to 512×512, ImageNet normalization, argmax of `net(img)[0]`). Labels are nearest-resized back to the crop, then pasted into a background-0 canvas of the original `H×W`. CUDA is used only when it is already available; `--cpu` forces CPU for the detector and BiSeNet. A missing checkout, checkpoint, or image exits 2. A missing InsightFace install or `~/.insightface/models/buffalo_l/det_10g.onnx` also exits 2 and names `pip install insightface onnxruntime` (and `opencv-python-headless` if `cv2` is missing). The script does not download that onnx and does not call `insightface.utils.ensure_available`. On AutoDL the file is already on disk from the AEGIS stack.
+
+After a successful write (exit 0), re-run `python scripts/viz_nersemble306_parsing.py` and send that report. The previous full-frame parse was rejected because lip was 0 and ids 3/5/12/13 were missing.
 
 This does not install AEGIS attack dependencies and does not start masking. GPU masking still waits for a mentor greenlight.
 
@@ -57,7 +59,7 @@ python makeup/tests/test_nersemble306_parsing.py
 
 ### NeRSemble 306 parsing overlay
 
-`scripts/viz_nersemble306_parsing.py` is a CPU quality check for an existing `parsing/306.npy`. It builds `M` with `SemanticMask.from_parsing` and `DEFAULT_PARSING_LABELS`, prints pixel counts and the fraction of `H×W` for lip, eye, brow, cheek, and the union, prints the raw id histogram, and writes an RGB overlay. It does not run BiSeNet and does not start GPU masking.
+Re-run `scripts/viz_nersemble306_parsing.py` after `scripts/make_nersemble306_parsing.py` writes a new `parsing/306.npy`. It is a CPU quality check for that file. It builds `M` with `SemanticMask.from_parsing` and `DEFAULT_PARSING_LABELS`, prints pixel counts and the fraction of `H×W` for lip, eye, brow, cheek, and the union, prints the raw id histogram, and writes an RGB overlay. It does not run BiSeNet and does not start GPU masking. The writer exits 1 when one of those four counts is 0; this viz exits 1 for the same empty-region case and still writes the overlay.
 
 On AutoDL, from the repo root (the 306 npy and png are already at the defaults):
 
