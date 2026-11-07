@@ -1,8 +1,9 @@
 # Asset manifest
 
 Maps frozen names and experiment ids to paths on the AutoDL asset root.
-GPU launch waits on `docs/gpu_launch_checklist.md`. This file does not enable B2
-and does not vendor dataset bytes.
+GPU launch waits on `docs/gpu_launch_checklist.md`. B2 wiring may merge.
+A GPU run still needs all four gates green (mentor gate 4 after 1–3).
+This file does not authorize `--launch` and does not vendor dataset bytes.
 
 Filled from machine inventory on 2026-11-08 (SSH `connect.nmb1.seetacloud.com:32791`, GPU off).
 On-disk copy also at `/root/autodl-fs/gs-assets/MANIFEST.md`.

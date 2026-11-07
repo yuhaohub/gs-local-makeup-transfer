@@ -696,6 +696,8 @@ class DocsTest(unittest.TestCase):
         self.assertIn("results/b2_celeba_T0/", section)
         self.assertIn("results/b2_lfw_T0/", section)
         self.assertIn("outside_m_abs_delta", section)
+        self.assertIn("cos(adv, source) ↓ relative to goal", section)
+        self.assertIn("cos(adv, T) ↑", section)
         self.assertIn("kind=dc", section)
         self.assertIn("默认不加 `--launch`", section)
         matrix = text[text.find("## 实验矩阵") : text.find("## 协作约定")]
@@ -713,9 +715,15 @@ class DocsTest(unittest.TestCase):
         self.assertIn("parsing/306.npy", stub)
         self.assertIn("does not authorize", stub.lower())
 
-    def test_checklist_names_b2_slot_without_enabling_launch(self) -> None:
+    def test_checklist_names_b2_post_run_gate_without_launch(self) -> None:
         text = (_REPO / "docs" / "gpu_launch_checklist.md").read_text(encoding="utf-8")
-        self.assertIn("does not enable B2", text)
+        self.assertNotIn("does not enable B2", text)
+        self.assertIn("Wiring may merge", text)
+        self.assertIn("mentor gate 4", text)
+        self.assertIn("cos(adv, source)", text)
+        self.assertIn("↓ relative to goal", text)
+        self.assertIn("cos(adv, T)", text)
+        self.assertIn("outside_m_abs_delta", text)
         self.assertIn("results/b2_celeba_T0/", text)
         self.assertIn("results/b2_lfw_T0/", text)
         self.assertIn("parsing/306.npy", text)

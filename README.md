@@ -266,7 +266,7 @@ T 与 B1 相同，仓库不收录整库：
 - `results/b2_celeba_T0/`
 - `results/b2_lfw_T0/`
 
-门禁字段写在摘要里，接线时不填 GPU 数字：`pipeline_ok`、`cos_adv_source`（`cos(adv, source)`）、`cos_adv_target`（`cos(adv, T)`）、`outside_m_abs_delta`（\(M\) 外 \(|\delta|\) 的最大值，通过为 0）。四项齐了且最后一项为 0，`pipeline_ok` 才为 true。
+接线摘要里这几项保持空，不填 GPU 数字。跑完之后的门禁（bob 冻结，见 `docs/gpu_launch_checklist.md` 的 B2 一节）是：`pipeline_ok`，并且 cos(adv, source) ↓ relative to goal（`cos_adv_source`），cos(adv, T) ↑（`cos_adv_target`），以及 outside-M \(|\delta|=0\)（`outside_m_abs_delta`）。接线可以合并。GPU 仍要四道门都绿：先 1–3，再是导师的第 4 道。默认不加 `--launch`。
 
 默认不加 `--launch`，也不装钩子，不授权 AutoDL。下面这条只写摘要：
 
