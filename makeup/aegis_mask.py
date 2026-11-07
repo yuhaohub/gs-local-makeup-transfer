@@ -21,6 +21,7 @@ the call-site note and does not import AEGIS.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -83,6 +84,16 @@ MASK_AVATAR_ARGV: Tuple[str, ...] = (
 ADAFACE_CHECKPOINT = Path("models/adaface_ir50_ms1mv2.ckpt")
 INSIGHTFACE_DETECTOR = Path("~/.insightface/models/buffalo_l/det_10g.onnx")
 LAUNCH_TIMEOUT_SECONDS = 1800
+# Was 20 lines / 1500 chars. That window kept the tqdm redraws and cut
+# ``Epsilon: 0.100 -> Aggregated Cosine Similarity: ...`` when the line
+# sat just above the tail (stdout is concatenated before a long stderr).
+LOG_TAIL_LINES = 200
+LOG_TAIL_CHARS = 16000
+# AEGIS ``AEGIS.run`` prints this on stdout after ``save_results``.
+_COSINE_LINE = re.compile(
+    r"Epsilon:\s*([+-]?\d+(?:\.\d+)?)\s*->\s*"
+    r"Aggregated Cosine Similarity:\s*([+-]?\d+(?:\.\d+)?)"
+)
 
 AEGIS_HOOK_TODO = (
     "TODO(james): call projected_pgd_step after the sign update in "
@@ -926,17 +937,19 @@ def collect_launch_blockers(aegis_root: Path) -> list[str]:
 def launch_mask_avatar(aegis_root: Path) -> dict:
     """Start the B0-a 306 command when every local input is already present.
 
-    Returns a dict with ``launched``, ``return_code``, ``blockers``, and
-    ``log_tail``. A blocker list means the process was not started.
+    Returns a dict with ``launched``, ``return_code``, ``blockers``,
+    ``log_tail``, ``aggregated_cosine_similarity``, and ``epsilon_cosine``.
+    Cosine fields are parsed from the full stdout and stderr before the
+    tail is cut. A blocker list means the process was not started.
     """
     blockers = collect_launch_blockers(aegis_root)
     if blockers:
-        return {
-            "launched": False,
-            "return_code": None,
-            "blockers": blockers,
-            "log_tail": "",
-        }
+        return _launch_payload(
+            launched=False,
+            return_code=None,
+            blockers=blockers,
+            log="",
+        )
     argv = mask_avatar_argv()
     try:
         proc = subprocess.run(
@@ -953,34 +966,98 @@ def launch_mask_avatar(aegis_root: Path) -> dict:
             log += exc.stdout
         if isinstance(exc.stderr, str):
             log += exc.stderr
-        return {
-            "launched": True,
-            "return_code": None,
-            "blockers": [],
-            "log_tail": _log_tail(log),
-        }
+        return _launch_payload(
+            launched=True,
+            return_code=None,
+            blockers=[],
+            log=log,
+        )
     except OSError as exc:
-        return {
-            "launched": False,
-            "return_code": None,
-            "blockers": [f"deps_missing: mask_avatar could not be started: {exc}"],
-            "log_tail": "",
-        }
+        return _launch_payload(
+            launched=False,
+            return_code=None,
+            blockers=[f"deps_missing: mask_avatar could not be started: {exc}"],
+            log="",
+        )
     log = (proc.stdout or "") + (proc.stderr or "")
+    return _launch_payload(
+        launched=True,
+        return_code=proc.returncode,
+        blockers=[],
+        log=log,
+    )
+
+
+def _launch_payload(
+    *,
+    launched: bool,
+    return_code: Optional[int],
+    blockers: list[str],
+    log: str,
+) -> dict:
+    """Tail plus Foolbox cosine parsed from the uncut log."""
+    metrics = extract_launch_metrics(log)
     return {
-        "launched": True,
-        "return_code": proc.returncode,
-        "blockers": [],
+        "launched": launched,
+        "return_code": return_code,
+        "blockers": blockers,
         "log_tail": _log_tail(log),
+        "aggregated_cosine_similarity": metrics["aggregated_cosine_similarity"],
+        "epsilon_cosine": metrics["epsilon_cosine"],
+    }
+
+
+def extract_launch_metrics(text: str) -> dict:
+    """Read Foolbox ``Epsilon -> Aggregated Cosine Similarity`` lines.
+
+    Scans the full captured stdout and stderr, before ``_log_tail`` cuts
+    them. ``aggregated_cosine_similarity`` is the last printed value
+    (B0-a prints one line, for ε=0.1). ``epsilon_cosine`` keeps every line.
+    """
+    rows = []
+    for eps, sim in _COSINE_LINE.findall(text or ""):
+        rows.append(
+            {
+                "epsilon": float(eps),
+                "aggregated_cosine_similarity": float(sim),
+            }
+        )
+    cosine = None if not rows else rows[-1]["aggregated_cosine_similarity"]
+    return {
+        "aggregated_cosine_similarity": cosine,
+        "epsilon_cosine": rows,
     }
 
 
 def _log_tail(text: str) -> str:
-    lines = [line for line in text.splitlines() if line.strip()]
-    tail = "\n".join(lines[-20:])
-    if len(tail) > 1500:
-        tail = tail[-1500:]
-    return tail
+    """Last lines of a mask_avatar log, with cosine summaries pinned.
+
+    A 20-line / 1500-character tail dropped
+    ``Aggregated Cosine Similarity`` when tqdm redraws filled the window
+    or the line sat above it. Summary lines are appended so a char trim
+    of the front cannot remove them.
+    """
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    summary = [line for line in lines if _COSINE_LINE.search(line)]
+    body = [
+        line
+        for line in lines[-LOG_TAIL_LINES:]
+        if not _COSINE_LINE.search(line)
+    ]
+    extra = "\n".join(summary)
+    head = "\n".join(body)
+    if not extra:
+        if len(head) > LOG_TAIL_CHARS:
+            return head[-LOG_TAIL_CHARS:]
+        return head
+    if len(extra) >= LOG_TAIL_CHARS:
+        return extra[-LOG_TAIL_CHARS:]
+    separator = "\n" if head else ""
+    budget = LOG_TAIL_CHARS - len(extra) - len(separator)
+    if len(head) > budget:
+        head = head[-budget:] if budget > 0 else ""
+        separator = "\n" if head else ""
+    return f"{head}{separator}{extra}"
 
 
 def _armed_dc_sentence(attach: Optional[dict]) -> str:
@@ -1020,6 +1097,9 @@ def smoke_note(smoke: dict, launch: dict, attach: Optional[dict] = None) -> str:
             "It multiplies by M only when the makeup hook config is already "
             "installed in that AEGIS root."
         )
+        cosine = launch.get("aggregated_cosine_similarity")
+        if cosine is not None:
+            gpu += f" Aggregated cosine similarity={cosine}."
     else:
         gpu = "GPU mask_avatar was not started."
         blockers = launch.get("blockers") or []
