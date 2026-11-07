@@ -1,7 +1,7 @@
 # 与交付文档实验矩阵对齐；实现时按 ID 扩展命令
 baselines:
   B0: {desc: "AEGIS original de-identification (formal subject NeRSemble 306; B0-b FaceScape 527 cancelled)"}
-  B1: {desc: "AEGIS interface + targeted impersonation (full face)"}
+  B1: {desc: "AEGIS interface + targeted impersonation (full face, CelebA/LFW still image, no makeup mask; first smoke celeba_T0.jpg)"}
   B2: {desc: "B1 + makeup semantic mask + amplitude constraint"}
 method:
   M: {desc: "B2 + DPA proxies + preprocess-invariant transforms"}
