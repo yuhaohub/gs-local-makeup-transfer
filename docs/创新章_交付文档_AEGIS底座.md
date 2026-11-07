@@ -176,7 +176,7 @@ Gaussian-to-Mesh 纹理迁移、顶点级优化：服务高保真表征与效率
 - **多视角**：固定视角集合上报告均值/方差，体现 3D 一致性。
 
 ### 6.2 必跑设置
-1. **AEGIS 原设定复现 sanity check**（去身份指标，证明底座接对）；  
+1. **AEGIS 原设定复现 sanity check**（去身份指标，证明底座接对）。正式主体冻结为 **NeRSemble 306**：已合并的 B0-a（`status=pipeline_ok`，`return_code=0`，`subject=306`）即正式 B0。**B0-b（FaceScape 527）已取消**，不在关键路径上，不再等待该主体；  
 2. **AEGIS→定向冒充（全脸颜色，无 mask）**；  
 3. **+ 语义妆容 mask + \(\mathcal{L}_{\mathrm{nat}}\)**；  
 4. **+ \(\mathcal{F}_{\mathrm{DPA}}\)**；  
@@ -231,7 +231,7 @@ Gaussian-to-Mesh 纹理迁移、顶点级优化：服务高保真表征与效率
 - [x] 完整问题链与模块理由（本文）  
 - [x] 形式化与约束  
 - [x] 实验协议与成功标准  
-- [ ] AEGIS 复现 sanity check（下一步实验）  
+- [x] AEGIS 复现 sanity check：正式 B0 = NeRSemble 306（已合并 B0-a，`pipeline_ok` / `return_code=0` / `subject=306`）；B0-b FaceScape 527 已取消，不在关键路径  
 - [ ] 校园网补 3DAO / DiffAM-RGN PDF  
 
 **本文件路径**：`/workspace/papers/face-adv-chapter/docs/创新章_交付文档_AEGIS底座.md`

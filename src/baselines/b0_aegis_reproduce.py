@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # B0: original AEGIS de-identification sanity check.
+# Formal subject is NeRSemble 306. Merged B0-a (status=pipeline_ok,
+# return_code=0, subject=306) is the formal B0. B0-b (FaceScape 527) is
+# cancelled and is not on the critical path. scripts/check_b0_gate.sh
+# accepts that recorded pass and does not require subject 527.
 # Spec: docs/创新章_交付文档_AEGIS底座.md §6.2 item 1
 #       ("AEGIS 原设定复现 sanity check" — de-id metrics, prove the base is wired).
 # Matrix: configs/experiment_matrix.yaml baselines.B0
-#         ("AEGIS original de-identification").
+#         ("AEGIS original de-identification", formal subject NeRSemble 306).
 # Bootstrap with scripts/00_bootstrap_aegis.sh. third_party/AEGIS stays
 # gitignored; do not vendor it. This module does not download weights,
 # datasets, or secrets, and it does not run the large-dataset eval targets
@@ -310,13 +314,12 @@ def _primary_status(blockers: list[str]) -> str:
 
 
 def _demo_hint() -> str:
-    demo = AEGIS_ROOT / "datasets/NeRSembleReconst/avatars/306/point_cloud.ply"
-    if demo.is_file():
-        return (
-            " Bootstrap clone includes datasets/NeRSembleReconst avatar 306, "
-            "used by other makefile targets; B0 stays on make mask_avatar."
-        )
-    return ""
+    """Point at the frozen subject. FaceScape 527 is not the formal B0."""
+    return (
+        " Formal B0 subject is NeRSemble 306 (B0-a, status=pipeline_ok, "
+        "return_code=0). B0-b FaceScape 527 is cancelled and is not on the "
+        "critical path."
+    )
 
 
 def _base_metrics(pipeline: dict, *, has_cuda: bool) -> dict:
