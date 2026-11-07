@@ -45,6 +45,52 @@ bash scripts/check_b0_gate.sh --bootstrap
 python src/baselines/b0_aegis_reproduce.py
 ```
 
+## NeRSemble 306 妆容 mask 冒烟
+
+正式基线是 **NeRSemble subject 306**。B0-a 已在该头像上跑通原文 AEGIS masking（AdaFace，`eps=0.1`，`target-features DC`，`linfpgd`，聚合余弦约 -0.2488），摘要在 `results/b0_aegis_sanity_summary.*`。这一刀只把妆容语义 mask 接到同一条 masking 路径上，检查残差满足 \(\mathrm{supp}(\delta)\subseteq M\) 且 \(\|\delta\|_\infty\le\varepsilon\)。它不是完整 B2（没有定向冒充，也没有论文评测）。
+
+`third_party/AEGIS` 的 makefile 目标 `mask_avatar` 写的是 FaceScape 527。527 已取消。306 冒烟直接调用 `scripts/mask_avatar.py`，参数与 B0-a 摘要里的命令一致。
+
+306 demo 只有 `datasets/NeRSembleReconst/avatars/306/point_cloud.ply` 和 `datasets/NeRSembleReconst/renders/306.png`，没有 parsing 标签。有 `.npy` 整数标签时走 `SemanticMask.from_parsing`（BiSeNet / CelebAMask-HQ id，见 `makeup/README.md`）。没有标签时，CPU 冒烟用 `documented_fallback_labels` 造一张同样 id 的标签图再交给 `from_parsing`。这张图不是 306 的解析结果。
+
+AEGIS 的 Foolbox L∞ PGD（B0-a 那条，`AEGIS._run_foolbox_attack`）和 `--adaptive-epsilon` 用的 `adaptive_linf_pgd_attack` 都只做 ε 裁剪，不乘妆容 mask。`--select-regions` 是 FLAME 区域子集，不是 `from_parsing`。约束在 `makeup.residual.project` / `apply` 和 `makeup/aegis_mask.py` 的 `projected_pgd_step`。步内钩子留给 james，见该文件的 TODO。
+
+CPU（无 GPU、无权重、不下载数据）：
+
+```bash
+python scripts/nersemble306_makeup_mask_smoke.py
+python makeup/tests/test_nersemble306_mask_smoke.py
+```
+
+摘要写到 `results/nersemble306_makeup_mask_smoke.json` 和 `.csv`。`status=cpu_smoke_ok` 表示 CPU 投影满足支撑约束；`gpu_launched=false` 表示没有启动 `mask_avatar.py`。
+
+AutoDL 上用机器上已有的 306 ply/png 和 AdaFace 权重 `third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt`。不要重新下载，也不要跑 `make mask_avatar`。在 `third_party/AEGIS` 目录执行：
+
+```bash
+uv run python scripts/mask_avatar.py \
+  --avatar-dir ./datasets/NeRSembleReconst/avatars/306 \
+  --target-image ./datasets/NeRSembleReconst/renders/306.png \
+  --camera-boundary-angles -0.5 0.5 -0.5 0.5 0.0 0.0 \
+  --angle-aggregation mean \
+  --seed 42 \
+  --epsilons 0.1 \
+  --attack-steps 300 \
+  --target-features DC \
+  --adv-attack linfpgd \
+  --embedder adaface \
+  --radius 1 \
+  --output-name NeRSembleMasked306
+```
+
+真实标签放在 `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy`（或 `avatars/306/parsing.npy`），也可以：
+
+```bash
+python scripts/nersemble306_makeup_mask_smoke.py \
+  --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
+```
+
+`--launch` 只在 uv、CUDA、306 ply/png、AdaFace checkpoint、InsightFace `det_10g.onnx`、`GaussianAvatars` 都已经在盘上时才启动上面的命令。缺任何一项就跳过，避免脚本自己去下载。启动后的 AEGIS 进程仍然是原文 Foolbox 路径；妆容支撑约束以本仓库的投影为准。
+
 ## 实验矩阵（提交代码时对齐）
 | ID | 含义 |
 |----|------|
