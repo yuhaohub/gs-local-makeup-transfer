@@ -17,6 +17,13 @@ The CPU path always runs the in-loop makeup projection
 (``makeup.aegis_pgd_hook``). ``--arm-hook`` writes that projection into
 ``third_party/AEGIS`` when the tree is already present. A missing tree is
 reported as ``tree_missing`` and the CPU smoke still finishes.
+
+B0-a attacks DC. ``--arm-hook`` therefore arms ``kind=dc``. An ``(H, W)``
+parsing map stays the semantic source: ``M`` is sampled at frontal-camera
+projections of the Gaussian means, one weight per DC row. A ply with
+FLAME ``binding_0`` defers that sample to ``gaussians.get_xyz`` inside
+``mask_avatar``, before the first Foolbox step. ``--launch`` runs after
+``--arm-hook`` when both are set.
 """
 
 from __future__ import annotations
@@ -31,22 +38,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from makeup import SemanticMask  # noqa: E402
 from makeup.aegis_mask import (  # noqa: E402
     SUBJECT,
     assert_subject_306,
     collect_launch_blockers,
     command_text,
     launch_mask_avatar,
+    load_b0a_dc_means,
     resolve_parsing,
     run_cpu_mask_smoke,
     smoke_note,
 )
 from makeup.aegis_pgd_hook import (  # noqa: E402
-    MakeupPgdHook,
+    dc_hook_from_parsing,
     install_makeup_pgd_hook,
     locate_aegis_call_sites,
 )
+from makeup.mask import as_mask_array  # noqa: E402
 
 SUMMARY_STEM = "nersemble306_makeup_mask_smoke"
 EXPERIMENT_ID = "306-makeup-mask-smoke"
@@ -109,6 +117,10 @@ def build_payload(smoke: dict, launch: dict, attach: dict | None = None) -> dict
         ],
         "aegis_hook_attach": None if attach is None else attach.get("status"),
         "aegis_hook_attach_note": None if attach is None else attach.get("note"),
+        "armed_hook_kind": None if attach is None else attach.get("hook_kind"),
+        "armed_hook_mask_shape": None if attach is None else attach.get("hook_mask_shape"),
+        "dc_mask_lift": None if attach is None else attach.get("dc_mask_lift"),
+        "dc_means_source": None if attach is None else attach.get("dc_means_source"),
         "note": smoke_note(smoke, launch, attach),
     }
 
@@ -205,8 +217,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Run the B0-a 306 mask_avatar.py command when ply, png, AdaFace "
             "weights, and CUDA are already present. Does not download them. "
-            "That process applies the makeup mask only if --arm-hook already "
-            "patched this AEGIS tree."
+            "When --arm-hook is also set, the DC hook is installed first."
         ),
     )
     parser.add_argument(
@@ -215,7 +226,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "When third_party/AEGIS is present, patch adaptive_linf_pgd_attack "
             "and AEGIS._run_foolbox_attack so each L∞ step calls "
-            "project_residual. Does not clone AEGIS and does not download "
+            "project_residual. An (H, W) parsing map is armed as kind=dc: "
+            "M is sampled at frontal-camera projections of the Gaussian "
+            "means. A FLAME-bound ply defers that sample to gaussians.get_xyz "
+            "inside mask_avatar. Does not clone AEGIS and does not download "
             "weights. A missing tree is reported and the CPU smoke still runs. "
             "Refuses the documented fallback label grid."
         ),
@@ -237,6 +251,25 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
 
+    if args.arm_hook:
+        means = None
+        means_source = "per-gaussian-labels"
+        if len(getattr(resolved.labels, "shape", ())) == 2:
+            means, means_source = load_b0a_dc_means(args.aegis_root, args.subject)
+        hook = dc_hook_from_parsing(resolved.labels, smoke["epsilon"], means)
+        attach = install_makeup_pgd_hook(
+            hook,
+            args.aegis_root,
+            mask_source=resolved.mask_source,
+        )
+        attach["hook_kind"] = hook.kind
+        attach["hook_mask_shape"] = [
+            int(dim) for dim in as_mask_array(hook.mask).shape
+        ]
+        attach["dc_mask_lift"] = hook.dc_mask_lift
+        attach["dc_means_source"] = means_source
+    else:
+        attach = locate_aegis_call_sites(args.aegis_root)
     if args.launch:
         launch = launch_mask_avatar(args.aegis_root)
     else:
@@ -246,16 +279,6 @@ def main(argv: list[str] | None = None) -> int:
             "blockers": collect_launch_blockers(args.aegis_root),
             "log_tail": "",
         }
-    if args.arm_hook:
-        mask = SemanticMask.from_parsing(resolved.labels)
-        hook = MakeupPgdHook(mask, smoke["epsilon"], kind=smoke["kind"])
-        attach = install_makeup_pgd_hook(
-            hook,
-            args.aegis_root,
-            mask_source=resolved.mask_source,
-        )
-    else:
-        attach = locate_aegis_call_sites(args.aegis_root)
     payload = build_payload(smoke, launch, attach)
     json_path, csv_path = write_summary(args.results_dir, payload)
     print(
