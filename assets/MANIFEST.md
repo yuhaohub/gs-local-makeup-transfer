@@ -4,6 +4,9 @@ Maps frozen names and experiment ids to paths on the AutoDL asset root.
 GPU launch waits on `docs/gpu_launch_checklist.md`. This file does not enable B2
 and does not vendor dataset bytes.
 
+Filled from machine inventory on 2026-11-08 (SSH `connect.nmb1.seetacloud.com:32791`, GPU off).
+On-disk copy also at `/root/autodl-fs/gs-assets/MANIFEST.md`.
+
 ## Root
 
 Single asset root: `/root/autodl-fs/gs-assets/`.
@@ -13,11 +16,13 @@ summary location.
 
 | Subdir | Holds |
 | --- | --- |
-| `weights/` | Checkpoints the runs already name (AdaFace stub below). |
+| `weights/` | Checkpoints the runs already name (AdaFace + BiSeNet). |
 | `avatars/` | NeRSemble subject 306 gaussian avatar. |
-| `masks/` | Subject 306 parsing mask. |
+| `parsing/` | Subject 306 parsing mask (`306.npy`). (Template once said `masks/`; on-disk truth is `parsing/`.) |
+| `insightface/` | `buffalo_l` detector onnx copy. |
 | `targets/` | Frozen stills `celeba_T0.jpg` and `lfw_T0.jpg`. |
-| `runs/<run_id>/` | Machine-side summary and log for that run only. |
+| `renders/` | Verification render `306.png`. |
+| `runs/<run_id>/` | Machine-side summary and log for that run only (not yet populated). |
 
 Repo summaries are not on this root. One run writes
 `results/<exp_id>/summary.json`, `results/<exp_id>/summary.csv`, and the log
@@ -30,22 +35,26 @@ Workspace paths are symlinks into this root (see README「新机」). Git does n
 track the image or weight bytes. `assets/targets/*` stays local except
 `.gitkeep`.
 
-`sha256`, `bytes`, and `frozen_at` are `TBD` until james measures the file on
-the machine. `frozen_at` is the calendar date those bytes were frozen
-(`YYYY-MM-DD`). Do not invent a second filename for a row that already has a
-frozen name.
+## Read-only public sources (not in gs-assets)
+
+| Path | Notes |
+| --- | --- |
+| `/root/autodl-pub/CelebA/` | Local CelebA (`Img/img_align_celeba.zip`, 7z variants). Read-only source library. Do **not** copy the whole set into `gs-assets`. |
+| `/root/autodl-pub/CASIAWebFace/CASIA-WebFace.zip` | Local CASIA-WebFace zip. Not in frozen matrix — do not touch until a frozen name is registered. |
+
+`celeba_T0.jpg` was frozen from HF-mirror parquet (`huggan/CelebA-faces-with-attributes`, `000001.jpg`), not extracted from `autodl-pub` this round. Future T picks may provenance to `autodl-pub/CelebA/...`.
 
 ## Rows
 
 | path | frozen name / exp id | kind | source/notes | owner | frozen_at | sha256 | bytes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg` | `celeba_T0` / B1 (B1-a, first smoke) | target | CelebA still. Frozen on-disk name. Default `--impersonation-image`. Repo does not vendor CelebA. Workspace symlink example: `assets/targets/celeba_T0.jpg` (gitignored). | james | TBD | TBD | TBD |
-| `/root/autodl-fs/gs-assets/targets/lfw_T0.jpg` | `lfw_T0` / B1 (later still; own `results/<exp_id>/`) | target | LFW still. Frozen on-disk name. Not the first smoke. Do not reuse the celeba summary slot. Repo does not vendor LFW. | james | TBD | TBD | TBD |
-| `/root/autodl-fs/gs-assets/avatars/306/point_cloud.ply` | `306` / B0-a, B1 | avatar | NeRSemble subject 306 gaussian avatar. README: `gs-assets/avatars` holds only 306. Filename is the documented `point_cloud.ply`. Command path: `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/point_cloud.ply`. Verification render on that same subject (not a `targets/` still): `third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png`. FaceScape 527 is cancelled. | james | TBD | TBD | TBD |
-| `/root/autodl-fs/gs-assets/masks/306.npy` | `306.npy` / `306-makeup-mask-smoke` (not B2) | mask | Parsing map for subject 306. Filename matches README `parsing/306.npy`. Workspace paths the scripts already accept: `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy` and `third_party/AEGIS/datasets/NeRSembleReconst/avatars/306/parsing.npy`. `documented_fallback_labels` is not this file. This row does not open B2. | james | TBD | TBD | TBD |
-| `/root/autodl-fs/gs-assets/weights/adaface_ir50_ms1mv2.ckpt` | `adaface_ir50_ms1mv2.ckpt` / B0-a, B1 | weights | Stub. AdaFace IR-50 MS1MV2 checkpoint named in README. Workspace pointer: `third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt`. Do not re-download. james fills sha256, bytes, and frozen_at. | james | TBD | TBD | TBD |
-| `third_party/face-parsing.PyTorch/res/cp/79999_iter.pth` | `79999_iter.pth` / 306 parsing | weights | Stub from README. CelebAMask-HQ BiSeNet (19 classes). Scripts do not download it. Not a `targets/` name. A copy already under `weights/` gets its own row; do not rename this file to add one. | james | TBD | TBD | TBD |
-| `~/.insightface/models/buffalo_l/det_10g.onnx` | `det_10g.onnx` / B0-a, B1 | weights | Stub from README. InsightFace `buffalo_l` detector AEGIS already uses. Usually already on AutoDL. Scripts do not download it and do not call `insightface.utils.ensure_available`. | james | TBD | TBD | TBD |
+| `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg` | `celeba_T0` / B1 (B1-a, first smoke) | target | CelebA still `000001.jpg` via hf-mirror parquet `huggan/CelebA-faces-with-attributes` row 0. Alias on disk: `celeba_000001.jpg` (same sha). Default `--impersonation-image`. Provenance: `targets/SOURCES.txt`. Repo does not vendor CelebA. Local pub available at `/root/autodl-pub/CelebA/` for future picks. | james | 2026-11-07 | `26df6b870cb1ad4cbab9164bd8e7e5742fd14c73cdd1278f1813f8a54f70ddde` | 21247 |
+| `/root/autodl-fs/gs-assets/targets/lfw_T0.jpg` | `lfw_T0` / B1 (later still; own `results/<exp_id>/`) | target | LFW `Alejandro_Toledo_0036.jpg` via hf-mirror parquet `sammyboi1801/lfw-face-transformer-dataset` row 0. Alias: `lfw_Alejandro_Toledo_0036.jpg` (same sha). Not the first smoke. Do not reuse the celeba summary slot. | james | 2026-11-07 | `452d5000acf19243e3eeac7516068d91d5d220f53723c5a3a35d29e2d7f73955` | 17411 |
+| `/root/autodl-fs/gs-assets/avatars/306/point_cloud.ply` | `306` / B0-a, B1 | avatar | NeRSemble subject 306 gaussian avatar. Companion `flame_param.npz` (69653560 bytes, sha `68a9d732a035595ea9fe4b7e32c36c135fa273d499fa3355bb76a1ef73599ae1`) sits beside it. Verification render: `renders/306.png`. FaceScape 527 cancelled. | james | 2026-11-07 | `08586dcddc38bb50e5899c131f4f7985d3fa15da2bc93cd04771e9d4265f69f7` | 22434847 |
+| `/root/autodl-fs/gs-assets/parsing/306.npy` | `306.npy` / `306-makeup-mask-smoke` (not B2) | mask | Parsing map for subject 306. On-disk subdir is `parsing/` (not `masks/`). Workspace symlink: `third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy` → this file. This row does not open B2. | james | 2026-11-07 | `5dff94658927e402754f7dd7884446760188ce10c39247b0b303a7b409d1d29d` | 4147328 |
+| `/root/autodl-fs/gs-assets/weights/adaface_ir50_ms1mv2.ckpt` | `adaface_ir50_ms1mv2.ckpt` / B0-a, B1 | weights | AdaFace IR-50 MS1MV2. Workspace symlink: `third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt` → this file. Do not re-download. | james | 2026-11-07 | `234da6ce931f821e0a8e920063dc2091d8122ea46285c159d2f25d3f762fecb3` | 700286703 |
+| `/root/autodl-fs/gs-assets/weights/79999_iter.pth` | `79999_iter.pth` / 306 parsing | weights | CelebAMask-HQ BiSeNet (19 classes). Lives under `gs-assets/weights/` (not only under `third_party/face-parsing.PyTorch/res/cp/`). | james | 2026-11-07 | `468e13ca13a9b43cc0881a9f99083a430e9c0a38abd935431d1c28ee94b26567` | 53289463 |
+| `/root/autodl-fs/gs-assets/insightface/det_10g.onnx` | `det_10g.onnx` / B0-a, B1 | weights | InsightFace `buffalo_l` detector. Also present at `~/.insightface/models/buffalo_l/det_10g.onnx` (same size). gs-assets copy is the migrated truth for this host. | james | 2026-11-07 | `5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91` | 16923827 |
 
 ## Blank row
 
@@ -55,4 +64,4 @@ frozen name. The exp id must have a free `results/<exp_id>/` slot before
 
 | path | frozen name / exp id | kind | source/notes | owner | frozen_at | sha256 | bytes |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/root/autodl-fs/gs-assets/<subdir>/<frozen_name>` | `<frozen_name>` / `<exp_id>` | `<kind>` | `<subdir>` is `weights`, `avatars`, `masks`, or `targets`. | james | TBD | TBD | TBD |
+| `/root/autodl-fs/gs-assets/<subdir>/<frozen_name>` | `<frozen_name>` / `<exp_id>` | `<kind>` | `<subdir>` is `weights`, `avatars`, `parsing`, or `targets`. | james | TBD | TBD | TBD |
