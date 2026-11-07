@@ -94,6 +94,31 @@ python scripts/make_nersemble306_parsing.py --image /path/to/306.png --cpu
 python makeup/tests/test_nersemble306_parsing.py
 ```
 
+### 306 parsing 质量检查（CPU）
+
+真实 `parsing/306.npy` 先在 CPU 上对一下 `DEFAULT_PARSING_LABELS`，再交给导师看，不要接着开 GPU masking。`scripts/viz_nersemble306_parsing.py` 用 `SemanticMask.from_parsing` 统计 lip / eye / brow / cheek 和并集的像素数（以及占 `H×W` 的比例），打印图里实际出现的 id 和个数，并把这些区域叠到 `renders/306.png` 上。唇、眼、眉、脸颊用不同颜色；`M` 以外保持原图像素。唇或任一必需区域像素数为 0 时退出码是 1，叠加图仍然会写出来。缺左/右半边 id（例如眉 3、眼 5）会打出 `INCOMPLETE`，退出码仍由「区域是否为空」决定。这一步不跑 BiSeNet，也不启动 GPU masking。
+
+在仓库根目录执行（AutoDL 上 306 的 npy 和 png 已经在默认路径时，这一条就够）：
+
+```bash
+python scripts/viz_nersemble306_parsing.py
+```
+
+显式路径：
+
+```bash
+python scripts/viz_nersemble306_parsing.py \
+  --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy \
+  --image third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png \
+  --out results/nersemble306_parsing_overlay.png
+```
+
+把整段终端输出和 `overlay:` 那一行交给导师。图例（alpha 0.55，`(1-alpha)*image + alpha*color`，绘制顺序 cheek、brow、eye、lip）：cheek `#F0B428`，brow `#326EE6`，eye `#28C850`，lip `#DC283C`。叠加图在 `results/nersemble306_parsing_overlay.png`（git 不跟踪这张 png）。不读真实 npy 的检查：
+
+```bash
+python makeup/tests/test_nersemble306_parsing_viz.py
+```
+
 AutoDL 上用机器上已有的 306 ply/png 和 AdaFace 权重 `third_party/AEGIS/models/adaface_ir50_ms1mv2.ckpt`。不要重新下载，也不要跑 `make mask_avatar`。在 `third_party/AEGIS` 目录执行：
 
 ```bash
