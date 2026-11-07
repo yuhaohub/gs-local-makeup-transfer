@@ -2,17 +2,19 @@
 
 Numeric methods need NumPy (``pip install numpy``). The import is soft:
 this package imports without NumPy, and those methods raise ``ImportError``
-if it is missing. See ``makeup/README.md``.
+if it is missing. ``NaturalnessLoss.lpips`` also needs ``torch`` and
+``lpips`` (``pip install torch lpips``) and raises ``ImportError`` if
+either is missing. See ``makeup/README.md``.
 
-Callable with NumPy: ``SemanticMask.from_regions`` (hand-built maps),
-``region`` / ``union`` / ``support`` when ``regions`` is populated;
-``MakeupResidual.project`` / ``apply``; ``project_residual`` /
-``apply_residual``; ``NaturalnessLoss.smooth`` and
-``NaturalnessLoss.__call__`` (smoothness only).
+Callable with NumPy: ``SemanticMask.from_regions`` and ``from_parsing``,
+``semantic_mask``, ``region`` / ``union`` / ``support`` when ``regions``
+is populated; ``MakeupResidual.project`` / ``apply``; ``project_residual`` /
+``apply_residual``; ``NaturalnessLoss.smooth``, ``NaturalnessLoss.palette``,
+and ``NaturalnessLoss.__call__`` (smoothness only).
 
-Still ``NotImplementedError``: ``SemanticMask.from_parsing``, ``semantic_mask``,
-``NaturalnessLoss.palette``, and ``NaturalnessLoss.lpips``.
-Nothing here optimizes ``δ`` or loads weights.
+``NaturalnessLoss.lpips`` runs on CPU when torch and lpips are installed.
+Nothing here optimizes ``δ``. LPIPS loads an AlexNet backbone on first use;
+the other hooks do not.
 """
 
 from makeup.mask import REGIONS, MakeupRegion, SemanticMask, semantic_mask

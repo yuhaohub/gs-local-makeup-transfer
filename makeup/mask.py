@@ -1,13 +1,14 @@
 """Semantic makeup mask ``M`` over lip, eye, brow, and cheek.
 
-``region``, ``union``, and ``support`` run with NumPy when ``regions`` is
-populated. ``from_parsing`` is not implemented. NumPy is a soft import;
-see ``makeup/README.md``.
+``region``, ``union``, ``support``, ``from_regions``, and ``from_parsing``
+run with NumPy. ``from_parsing`` reads an integer face-parsing map.
+NumPy is a soft import; see ``makeup/README.md``.
 """
 
 from __future__ import annotations
 
 from enum import Enum
+from types import MappingProxyType
 from typing import Mapping, Optional, Tuple
 
 from makeup._numpy import require_numpy
@@ -30,6 +31,21 @@ REGIONS: Tuple[MakeupRegion, ...] = (
     MakeupRegion.EYE,
     MakeupRegion.BROW,
     MakeupRegion.CHEEK,
+)
+
+# BiSeNet / face-parsing.PyTorch order (prepropess_data.py enumerates
+# CelebAMask-HQ attributes from 1; 0 is background). Not the index order
+# in the CelebAMask-HQ dataset README. Label 1 (skin) stands in for cheek.
+DEFAULT_PARSING_LABELS: Mapping[int, MakeupRegion] = MappingProxyType(
+    {
+        12: MakeupRegion.LIP,  # u_lip
+        13: MakeupRegion.LIP,  # l_lip
+        4: MakeupRegion.EYE,  # l_eye
+        5: MakeupRegion.EYE,  # r_eye
+        2: MakeupRegion.BROW,  # l_brow
+        3: MakeupRegion.BROW,  # r_brow
+        1: MakeupRegion.CHEEK,  # skin
+    }
 )
 
 
@@ -113,21 +129,55 @@ class SemanticMask:
         image: Optional[ArrayLike] = None,
         label_map: Optional[Mapping[int, MakeupRegion]] = None,
     ) -> "SemanticMask":
-        """Build ``M`` from a face-parsing label map.
+        """Build hard region maps from a face-parsing label map.
+
+        Default ids are ``DEFAULT_PARSING_LABELS`` (BiSeNet /
+        face-parsing.PyTorch on CelebAMask-HQ):
+
+        | id | parser name | region |
+        | --- | --- | --- |
+        | 1 | skin | cheek (no cheek class; override with ``label_map``) |
+        | 2, 3 | l_brow, r_brow | brow |
+        | 4, 5 | l_eye, r_eye | eye |
+        | 12, 13 | u_lip, l_lip | lip |
+
+        Other ids stay outside ``M``, including background ``0``, eyeglasses
+        ``6``, nose ``10``, inner mouth ``11``, and hair ``17``. ``label_map``
+        replaces the default; it is not merged with it. Ids that share a
+        region are combined with a pixelwise max. Every region named in the
+        map is stored, even when no pixel has that id (an all-zero map).
 
         Args:
-            parsing: integer labels, shape ``(H, W)`` or ``(N,)``.
-            image: optional RGB reference, shape ``(H, W, 3)``, for alignment only.
-            label_map: parser id to ``MakeupRegion``. Ids not listed fall outside ``M``.
+            parsing: integer labels, shape ``(H, W)`` or ``(N,)``. Float
+                arrays are accepted when every value is finite and integral.
+            image: optional RGB reference for alignment only. Shape
+                ``(H, W, 3)`` when ``parsing`` is ``(H, W)``, or ``(N, 3)``
+                when ``parsing`` is ``(N,)``. Pixel values are ignored.
+            label_map: parser id to ``MakeupRegion`` (or its string value).
+                Ids not listed fall outside ``M``. ``None`` uses
+                ``DEFAULT_PARSING_LABELS``.
 
         Returns:
-            A ``SemanticMask`` whose union is ``M``.
+            A ``SemanticMask`` of hard ``0`` / ``1`` maps. The union is ``M``.
 
         Raises:
-            NotImplementedError: parsing is not implemented.
+            ValueError: ``parsing`` is not an integer label grid, ``image``
+                does not align, ``label_map`` is empty, or a key or region
+                name is invalid.
+            ImportError: NumPy is not installed.
         """
-        del parsing, image, label_map
-        raise NotImplementedError("SemanticMask.from_parsing is not implemented")
+        np = require_numpy()
+        labels = _as_parsing_labels(parsing)
+        _check_parsing_alignment(labels, image)
+        mapping = _coerce_label_map(label_map)
+        stored: dict = {}
+        for label_id, region in mapping.items():
+            hit = (labels == label_id).astype(float)
+            if region in stored:
+                stored[region] = np.maximum(stored[region], hit)
+            else:
+                stored[region] = hit
+        return cls.from_regions(stored)
 
     def region(self, name: MakeupRegion) -> ArrayLike:
         """Return a float copy of one region map.
@@ -203,6 +253,56 @@ def as_mask_array(mask: ArrayLike) -> ArrayLike:
     return np.asarray(mask, dtype=float)
 
 
+def _as_parsing_labels(parsing: ArrayLike) -> ArrayLike:
+    """Return ``parsing`` as an ``int64`` label array of shape ``(H, W)`` or ``(N,)``."""
+    np = require_numpy()
+    labels = np.asarray(parsing)
+    if labels.dtype.kind not in "iuf" or labels.ndim not in (1, 2):
+        raise ValueError(
+            "parsing must be integer labels of shape (H, W) or (N,), "
+            f"got dtype {labels.dtype} shape {labels.shape}"
+        )
+    if labels.dtype.kind == "f":
+        if labels.size and not np.all(np.isfinite(labels)):
+            raise ValueError("parsing has non-finite values")
+        if labels.size and not np.all(labels == np.rint(labels)):
+            raise ValueError("parsing labels must be integers")
+        labels = np.rint(labels)
+    return np.asarray(labels, dtype=np.int64)
+
+
+def _coerce_label_map(label_map: Optional[Mapping[int, MakeupRegion]]) -> dict:
+    """Copy ``label_map`` into ``{int id: MakeupRegion}``. ``None`` uses the default."""
+    np = require_numpy()
+    source = DEFAULT_PARSING_LABELS if label_map is None else label_map
+    if not source:
+        raise ValueError("label_map is empty")
+    normalized = {}
+    for raw_id, raw_region in source.items():
+        if isinstance(raw_id, (bool, np.bool_)) or not isinstance(raw_id, (int, np.integer)):
+            raise ValueError(f"label id must be an int, got {raw_id!r}")
+        region = raw_region if isinstance(raw_region, MakeupRegion) else MakeupRegion(raw_region)
+        normalized[int(raw_id)] = region
+    return normalized
+
+
+def _check_parsing_alignment(labels: ArrayLike, image: Optional[ArrayLike]) -> None:
+    """Raise when ``image`` is present and its shape does not match ``labels``."""
+    if image is None:
+        return
+    np = require_numpy()
+    rgb = np.asarray(image)
+    if labels.ndim == 2:
+        expected = labels.shape + (3,)
+    else:
+        expected = (int(labels.shape[0]), 3)
+    if rgb.shape != expected:
+        raise ValueError(
+            f"image shape {rgb.shape} does not align with parsing shape {labels.shape}; "
+            f"expected {expected}"
+        )
+
+
 def semantic_mask(
     parsing: ArrayLike,
     *,
@@ -211,15 +311,19 @@ def semantic_mask(
 ) -> SemanticMask:
     """Build ``M`` from a face-parsing label map.
 
+    See ``SemanticMask.from_parsing``. ``image`` is an alignment check only.
+
     Args:
         parsing: integer labels, shape ``(H, W)`` or ``(N,)``.
-        image: optional RGB reference, shape ``(H, W, 3)``.
-        label_map: parser id to ``MakeupRegion``.
+        image: optional RGB reference. ``(H, W, 3)`` or, for a flat map, ``(N, 3)``.
+        label_map: parser id to ``MakeupRegion``. ``None`` uses
+            ``DEFAULT_PARSING_LABELS``.
 
     Returns:
-        Semantic mask ``M`` over lip, eye, brow, and cheek.
+        Semantic mask ``M`` over the regions named by the label map.
 
     Raises:
-        NotImplementedError: always, until parsing is implemented.
+        ValueError: ``parsing``, ``image``, or ``label_map`` is invalid.
+        ImportError: NumPy is not installed.
     """
     return SemanticMask.from_parsing(parsing, image=image, label_map=label_map)

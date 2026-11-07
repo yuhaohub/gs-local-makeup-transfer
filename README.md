@@ -21,7 +21,7 @@ docs/                只放一份交付文档
 configs/ scripts/ results/
 ```
 
-`makeup/` 用 NumPy 实现语义 mask 的 union/support、残差投影（\(\mathrm{supp}(\delta)\subseteq M\)、\(\|\delta\|_\infty\le\varepsilon\)）与平滑项；`from_parsing`、调色板与 LPIPS 仍未实现（见 `makeup/README.md`）。
+`makeup/` 用 NumPy 实现语义 mask（`from_parsing` 默认 BiSeNet / CelebAMask-HQ 标签）、残差投影（\(\mathrm{supp}(\delta)\subseteq M\)、\(\|\delta\|_\infty\le\varepsilon\)）、平滑项与调色板项；LPIPS 在安装 `torch` 与 `lpips` 后于 CPU 上计算（见 `makeup/README.md`）。
 
 ## 接入 AEGIS（底座）
 ```bash
