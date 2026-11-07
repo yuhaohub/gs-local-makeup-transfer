@@ -20,3 +20,6 @@ third_party/face-parsing.PyTorch/
 wandb/
 outputs/
 data/raw/
+# B1 impersonation stills stay on the AutoDL filesystem. Do not vendor CelebA/LFW.
+assets/targets/*
+!assets/targets/.gitkeep
