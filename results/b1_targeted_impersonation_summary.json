@@ -5,11 +5,11 @@
   "pipeline_ok": false,
   "subject": "306",
   "corpus": "CelebA",
-  "smoke_target": "celeba_000001",
+  "smoke_target": "celeba_T0",
   "bootstrapped": false,
-  "recorded_at": "2026-11-07T15:40:54+00:00",
+  "recorded_at": "2026-11-07T15:42:23+00:00",
   "metrics": {
-    "command": "python src/baselines/b1_targeted_impersonation.py --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_000001.jpg --launch",
+    "command": "python src/baselines/b1_targeted_impersonation.py --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg --launch",
     "command_attempted": false,
     "return_code": null,
     "log_tail": "",
@@ -35,14 +35,14 @@
     "k_angles": 5,
     "adaptive_epsilon": false,
     "selected_regions": [],
-    "output_name": "NeRSembleImpersonation306_celeba_000001",
+    "output_name": "NeRSembleImpersonation306_celeba_T0",
     "avatar_dir": "third_party/AEGIS/datasets/NeRSembleReconst/avatars/306",
     "source_image": "third_party/AEGIS/datasets/NeRSembleReconst/renders/306.png",
-    "impersonation_image": "/root/autodl-fs/gs-assets/targets/celeba_000001.jpg",
+    "impersonation_image": "/root/autodl-fs/gs-assets/targets/celeba_T0.jpg",
     "impersonation_image_present": false,
-    "lfw_image": "/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg",
+    "lfw_image": "/root/autodl-fs/gs-assets/targets/lfw_T0.jpg",
     "corpus": "CelebA",
-    "smoke_target": "celeba_000001",
+    "smoke_target": "celeba_T0",
     "criterion": {
       "foolbox_criterion": "TargetedMisclassification",
       "target_class": 1,
@@ -56,11 +56,11 @@
     "cos_adv_target": null,
     "aggregated_cosine_to_target": null,
     "makeup_hook_armed": false,
-    "expected_output_avatar": "third_party/AEGIS/datasets/seed42/NeRSembleImpersonation306_celeba_000001_adaface_all/eps_0.100/avatars/306/point_cloud.ply",
-    "expected_output_render": "third_party/AEGIS/datasets/seed42/NeRSembleImpersonation306_celeba_000001_adaface_all/eps_0.100/renders/306.png",
+    "expected_output_avatar": "third_party/AEGIS/datasets/seed42/NeRSembleImpersonation306_celeba_T0_adaface_all/eps_0.100/avatars/306/point_cloud.ply",
+    "expected_output_render": "third_party/AEGIS/datasets/seed42/NeRSembleImpersonation306_celeba_T0_adaface_all/eps_0.100/renders/306.png",
     "blockers": [
-      "awaiting_target: B1 full-face targeted impersonation is wired and was not launched. First smoke uses /root/autodl-fs/gs-assets/targets/celeba_000001.jpg (CelebA still → AdaFace). Later run: /root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg. The repo does not vendor CelebA or LFW. Placeholder names celeba_T0.jpg and lfw_T0.jpg are not the files on disk. Pass --launch only after celeba_000001.jpg is on disk. Makeup hook is disarmed."
+      "awaiting_target: B1 full-face targeted impersonation is wired and was not launched. First smoke uses /root/autodl-fs/gs-assets/targets/celeba_T0.jpg (CelebA still → AdaFace). Later run: /root/autodl-fs/gs-assets/targets/lfw_T0.jpg. The repo does not vendor CelebA or LFW. Pass --launch only after celeba_T0.jpg is on disk. Makeup hook is disarmed."
     ]
   },
-  "note": "B1 full-face targeted impersonation is wired and was not launched. First smoke uses /root/autodl-fs/gs-assets/targets/celeba_000001.jpg (CelebA still → AdaFace). Later run: /root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg. The repo does not vendor CelebA or LFW. Placeholder names celeba_T0.jpg and lfw_T0.jpg are not the files on disk. Pass --launch only after celeba_000001.jpg is on disk. Makeup hook is disarmed."
+  "note": "B1 full-face targeted impersonation is wired and was not launched. First smoke uses /root/autodl-fs/gs-assets/targets/celeba_T0.jpg (CelebA still → AdaFace). Later run: /root/autodl-fs/gs-assets/targets/lfw_T0.jpg. The repo does not vendor CelebA or LFW. Pass --launch only after celeba_T0.jpg is on disk. Makeup hook is disarmed."
 }

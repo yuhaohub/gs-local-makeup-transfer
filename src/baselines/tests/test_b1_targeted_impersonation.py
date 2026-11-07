@@ -99,18 +99,14 @@ class CriterionWiringTest(unittest.TestCase):
 
 
 class PlanAndCliTest(unittest.TestCase):
-    def test_default_image_is_celeba_000001(self) -> None:
+    def test_default_image_is_celeba_t0(self) -> None:
         self.assertEqual(
             b1.DEFAULT_IMPERSONATION_IMAGE,
-            "/root/autodl-fs/gs-assets/targets/celeba_000001.jpg",
+            "/root/autodl-fs/gs-assets/targets/celeba_T0.jpg",
         )
         self.assertEqual(
             b1.LFW_IMPERSONATION_IMAGE,
-            "/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg",
-        )
-        self.assertEqual(
-            b1.CELEBA_T0_ALIAS,
-            "/root/autodl-fs/gs-assets/targets/celeba_T0.jpg",
+            "/root/autodl-fs/gs-assets/targets/lfw_T0.jpg",
         )
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop(b1.IMPERSONATION_IMAGE_ENV, None)
@@ -177,8 +173,8 @@ class PlanAndCliTest(unittest.TestCase):
         self.assertEqual(kwargs["selected_regions"], [])
         self.assertFalse(kwargs["adaptive_epsilon"])
         self.assertIsNone(kwargs["surrogate_keys"])
-        self.assertEqual(kwargs["output_name"], "NeRSembleImpersonation306_celeba_000001")
-        self.assertIn("celeba_000001.jpg", plan.user_command())
+        self.assertEqual(kwargs["output_name"], "NeRSembleImpersonation306_celeba_T0")
+        self.assertIn("celeba_T0.jpg", plan.user_command())
         self.assertIn("--launch", plan.user_command())
         self.assertNotIn("--arm-hook", plan.user_command())
 
@@ -215,7 +211,7 @@ class PlanAndCliTest(unittest.TestCase):
         self.assertFalse(payload["pipeline_ok"])
         self.assertEqual(payload["status"], "awaiting_target")
         self.assertEqual(payload["corpus"], "CelebA")
-        self.assertEqual(payload["smoke_target"], "celeba_000001")
+        self.assertEqual(payload["smoke_target"], "celeba_T0")
         metrics = payload["metrics"]
         self.assertIsNone(metrics["return_code"])
         self.assertIsNone(metrics["cos_adv_source"])
@@ -227,11 +223,11 @@ class PlanAndCliTest(unittest.TestCase):
         self.assertEqual(metrics["criterion"]["target_class"], 1)
         self.assertEqual(
             metrics["impersonation_image"],
-            "/root/autodl-fs/gs-assets/targets/celeba_000001.jpg",
+            "/root/autodl-fs/gs-assets/targets/celeba_T0.jpg",
         )
         self.assertEqual(
             metrics["lfw_image"],
-            "/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg",
+            "/root/autodl-fs/gs-assets/targets/lfw_T0.jpg",
         )
         self.assertIn("cos_adv_source", csv_text)
         self.assertIn("cos_adv_target", csv_text)
@@ -302,13 +298,9 @@ class PlanAndCliTest(unittest.TestCase):
 
     def test_readme_documents_exact_filenames_and_command(self) -> None:
         text = (_REPO / "README.md").read_text(encoding="utf-8")
-        self.assertIn("/root/autodl-fs/gs-assets/targets/celeba_000001.jpg", text)
-        self.assertIn(
-            "/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg",
-            text,
-        )
-        self.assertIn("celeba_T0.jpg", text)
-        self.assertIn("lfw_T0.jpg", text)
+        self.assertIn("/root/autodl-fs/gs-assets/targets/celeba_T0.jpg", text)
+        self.assertIn("/root/autodl-fs/gs-assets/targets/lfw_T0.jpg", text)
+        self.assertNotIn("celeba_000001.jpg", text)
         self.assertIn("python src/baselines/b1_targeted_impersonation.py", text)
         self.assertIn("--impersonation-image", text)
         self.assertIn("--launch", text)

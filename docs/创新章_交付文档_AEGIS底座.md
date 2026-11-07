@@ -177,7 +177,7 @@ Gaussian-to-Mesh 纹理迁移、顶点级优化：服务高保真表征与效率
 
 ### 6.2 必跑设置
 1. **AEGIS 原设定复现 sanity check**（去身份指标，证明底座接对）。正式主体冻结为 **NeRSemble 306**：已合并的 B0-a（`status=pipeline_ok`，`return_code=0`，`subject=306`）即正式 B0。**B0-b（FaceScape 527）已取消**，不在关键路径上，不再等待该主体；  
-2. **AEGIS→定向冒充（全脸颜色，无 mask）**。冒充目标 T 是 CelebA 或 LFW 的一张静止人脸照片，经 AdaFace 得到嵌入，不是第二套 3DGS。盘上 NeRSemble 只有主体 306。第一刀样本是 `/root/autodl-fs/gs-assets/targets/celeba_000001.jpg`（james 已放到 fs；早先占位名 `celeba_T0.jpg` 不是盘上的文件；仓库不收录整库）。后一刀是 `/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg`（占位名 `lfw_T0.jpg`）。上游 `AEGIS.run` 把裸 `tensor([1])` 交给 Foolbox，未定向 `Misclassification` 会降低与参考嵌入 `e_r` 的余弦；`--target-image` 只提供 `e_r`。B1 把 `e_r` 设成 T，准则改为匹配类（logit 下标 1）的 `TargetedMisclassification`，最大化 `cos(adv, emb(T))`。不装妆容钩子。照片就位前不启动 GPU。命令见仓库 README「B1」一节；  
+2. **AEGIS→定向冒充（全脸颜色，无 mask）**。冒充目标 T 是 CelebA 或 LFW 的一张静止人脸照片，经 AdaFace 得到嵌入，不是第二套 3DGS。盘上 NeRSemble 只有主体 306。第一刀样本是 `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg`（盘上冻结名；仓库不收录整库）。后一刀是 `/root/autodl-fs/gs-assets/targets/lfw_T0.jpg`。上游 `AEGIS.run` 把裸 `tensor([1])` 交给 Foolbox，未定向 `Misclassification` 会降低与参考嵌入 `e_r` 的余弦；`--target-image` 只提供 `e_r`。B1 把 `e_r` 设成 T，准则改为匹配类（logit 下标 1）的 `TargetedMisclassification`，最大化 `cos(adv, emb(T))`。不装妆容钩子。照片就位前不启动 GPU。命令见仓库 README「B1」一节；  
 3. **+ 语义妆容 mask + \(\mathcal{L}_{\mathrm{nat}}\)**；  
 4. **+ \(\mathcal{F}_{\mathrm{DPA}}\)**；  
 5. **+ 预处理族 \(A\)**；  
@@ -188,7 +188,7 @@ Gaussian-to-Mesh 纹理迁移、顶点级优化：服务高保真表征与效率
 10. 有全文后：3DAO **文案对照**（不强制同表硬比 ASR）。
 
 ### 6.3 数据与黑盒
-- 攻击者：3DGS / SplattingAvatar 头像；目标：LFW 等公开身份（扩大数量以稳统计）。B1 的冒充目标 T 从 CelebA 或 LFW 取一张静止照片（第一刀 `celeba_000001.jpg`，后一刀 `lfw_Alejandro_Toledo_0036.jpg`；占位名 `celeba_T0.jpg` / `lfw_T0.jpg`），放在 `/root/autodl-fs/gs-assets/targets/`，不把整库放进仓库。  
+- 攻击者：3DGS / SplattingAvatar 头像；目标：LFW 等公开身份（扩大数量以稳统计）。B1 的冒充目标 T 从 CelebA 或 LFW 取一张静止照片（第一刀 `celeba_T0.jpg`，后一刀 `lfw_T0.jpg`），放在 `/root/autodl-fs/gs-assets/targets/`，不把整库放进仓库。  
 - 黑盒：Baidu 等商业 API；固定查询次数、复测与费率记录，回应中期「反馈波动」。
 
 ### 6.4 成功标准（章节立住的最低条）

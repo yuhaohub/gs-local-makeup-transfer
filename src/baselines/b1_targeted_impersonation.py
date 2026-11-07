@@ -58,15 +58,12 @@ EXPERIMENT_DESC = (
 SUBJECT = "306"
 UPSTREAM_AEGIS_COMMIT = "e3d20445942cc3d41e912897675290e090f116f7"
 
-# James placed these stills on the AutoDL filesystem. The repo does not
-# vendor CelebA or LFW. First smoke is celeba_000001. The LFW still is the
-# later run. celeba_T0.jpg / lfw_T0.jpg were placeholders and are not the files.
-DEFAULT_IMPERSONATION_IMAGE = "/root/autodl-fs/gs-assets/targets/celeba_000001.jpg"
-LFW_IMPERSONATION_IMAGE = (
-    "/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg"
-)
-CELEBA_T0_ALIAS = "/root/autodl-fs/gs-assets/targets/celeba_T0.jpg"
-LFW_T0_ALIAS = "/root/autodl-fs/gs-assets/targets/lfw_T0.jpg"
+# On-disk frozen names. James also keeps the source stills for provenance.
+# CLI, docs, and this default use these T0 paths.
+# The repo does not vendor CelebA or LFW. First smoke is celeba_T0.
+# lfw_T0 is the later run.
+DEFAULT_IMPERSONATION_IMAGE = "/root/autodl-fs/gs-assets/targets/celeba_T0.jpg"
+LFW_IMPERSONATION_IMAGE = "/root/autodl-fs/gs-assets/targets/lfw_T0.jpg"
 IMPERSONATION_IMAGE_ENV = "B1_IMPERSONATION_IMAGE"
 
 AVATAR_DIR_RELATIVE = Path("datasets/NeRSembleReconst/avatars/306")
@@ -306,13 +303,8 @@ def corpus_for(path: Path) -> str:
 
 
 def smoke_target_for(path: Path) -> str:
-    """Filename stem for the placed samples and the old placeholder names."""
-    if path.stem in {
-        "celeba_000001",
-        "celeba_T0",
-        "lfw_Alejandro_Toledo_0036",
-        "lfw_T0",
-    }:
+    """Filename stem for the frozen on-disk samples."""
+    if path.stem in {"celeba_T0", "lfw_T0"}:
         return path.stem
     return "custom"
 
@@ -323,7 +315,7 @@ def output_name_for(path: Path) -> str:
 
 
 def resolve_impersonation_image(flag: str | None) -> str:
-    """Flag, then ``B1_IMPERSONATION_IMAGE``, then ``celeba_000001.jpg``."""
+    """Flag, then ``B1_IMPERSONATION_IMAGE``, then ``celeba_T0.jpg``."""
     if flag:
         return flag
     env = os.environ.get(IMPERSONATION_IMAGE_ENV)
@@ -882,9 +874,7 @@ def _awaiting_note(plan: AttackPlan, *, launch_requested: bool) -> str:
         "(CelebA still → AdaFace). "
         f"Later run: {LFW_IMPERSONATION_IMAGE}. "
         "The repo does not vendor CelebA or LFW. "
-        f"Placeholder names {Path(CELEBA_T0_ALIAS).name} and "
-        f"{Path(LFW_T0_ALIAS).name} are not the files on disk. "
-        "Pass --launch only after celeba_000001.jpg is on disk. "
+        "Pass --launch only after celeba_T0.jpg is on disk. "
         "Makeup hook is disarmed."
     )
 

@@ -145,11 +145,11 @@ uv run python scripts/mask_avatar.py \
   --output-name NeRSembleMasked306
 ```
 
-B1 用同一套超参做全脸定向冒充，不装妆容钩子。第一刀照片是 `/root/autodl-fs/gs-assets/targets/celeba_000001.jpg`。文件不在盘上时不要加 `--launch`。完整说明在下面的「B1」一节。
+B1 用同一套超参做全脸定向冒充，不装妆容钩子。第一刀照片是 `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg`。文件不在盘上时不要加 `--launch`。完整说明在下面的「B1」一节。
 
 ```bash
 python src/baselines/b1_targeted_impersonation.py \
-  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_000001.jpg \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
   --launch
 ```
 
@@ -198,12 +198,12 @@ B1 与上面的 B0-a 命令使用同一套攻击超参：AdaFace，`eps=0.1`，3
 
 B1 在本仓做两件事，不改写整份 AEGIS：把 `e_r` 设成 T 的 AdaFace 嵌入；把 Foolbox 准则换成 `TargetedMisclassification`，目标类是匹配列（下标 1）。PGD 对这一类的交叉熵做梯度下降，最大化 `cos(adv, emb(T))`。扰动是全脸。这条路径不调用妆容 PGD 钩子，也不使用 `kind=dc` 的语义 mask `M`。worker 把 `GS_MAKEUP_HOOK_CONFIG` 指到一个不存在的路径，已经打过妆容补丁的树在 B1 进程里也不会套上 `M`。
 
-T 是一张静止人脸照片，语料是 **CelebA 或 LFW**，不是第二套 3DGS。`/root/autodl-fs/gs-assets/avatars` 和 `NeRSembleReconst/avatars` 里只有主体 306。仓库不收录 CelebA / LFW，不把整库拷进来，也不下载数据集。james 已经放在 AutoDL 文件系统上的样本是：
+T 是一张静止人脸照片，语料是 **CelebA 或 LFW**，不是第二套 3DGS。`/root/autodl-fs/gs-assets/avatars` 和 `NeRSembleReconst/avatars` 里只有主体 306。仓库不收录 CelebA / LFW，不把整库拷进来，也不下载数据集。盘上冻结的文件名是：
 
-- 第一刀（默认）：`/root/autodl-fs/gs-assets/targets/celeba_000001.jpg`
-- 后一刀：`/root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg`
+- 第一刀（B1-a，默认）：`/root/autodl-fs/gs-assets/targets/celeba_T0.jpg`
+- 后一刀：`/root/autodl-fs/gs-assets/targets/lfw_T0.jpg`
 
-早先占位名 `celeba_T0.jpg` 和 `lfw_T0.jpg` 不是盘上的文件。`--impersonation-image` 仍可以指向别的路径，包括这两个占位名。需要链进工作区时，只链这一张样本（例如 `assets/targets/celeba_000001.jpg`），git 不跟踪该图片。环境变量 `B1_IMPERSONATION_IMAGE` 可以改默认路径。
+命令和默认路径只用这两个名字。james 另外留了来源文件作对照，启动时不要改用别的文件名。需要链进工作区时，只链这一张样本（例如 `assets/targets/celeba_T0.jpg`），git 不跟踪该图片。环境变量 `B1_IMPERSONATION_IMAGE` 可以改默认路径。
 
 照片不在盘上时不要加 `--launch`。下面这条只写 `results/b1_targeted_impersonation_summary.json` 和 `.csv`（`pipeline_ok` 为 false，`cos_adv_source` / `cos_adv_target` 为 null），不占 GPU：
 
@@ -215,7 +215,7 @@ python src/baselines/b1_targeted_impersonation.py
 
 ```bash
 python src/baselines/b1_targeted_impersonation.py \
-  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_000001.jpg \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
   --launch
 ```
 
@@ -223,7 +223,7 @@ LFW 是后一刀，等 celeba 这一刀有结果再开：
 
 ```bash
 python src/baselines/b1_targeted_impersonation.py \
-  --impersonation-image /root/autodl-fs/gs-assets/targets/lfw_Alejandro_Toledo_0036.jpg \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/lfw_T0.jpg \
   --launch
 ```
 
@@ -239,7 +239,7 @@ python src/baselines/tests/test_b1_targeted_impersonation.py
 | ID | 含义 |
 |----|------|
 | B0 | AEGIS 原文去身份复现（正式主体 NeRSemble 306；B0-b / FaceScape 527 已取消） |
-| B1 | 同接口改定向冒充（全脸，CelebA/LFW 静止照片，无妆容 mask；第一刀 celeba_000001.jpg） |
+| B1 | 同接口改定向冒充（全脸，CelebA/LFW 静止照片，无妆容 mask；第一刀 celeba_T0.jpg） |
 | B2 | + 妆容 mask + 幅度约束 |
 | M  | + DPA + 预处理不变（主方法） |
 | A1/A2/A3 | 消融 DPA / 预处理 / univ |
