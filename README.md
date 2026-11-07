@@ -55,7 +55,12 @@ python src/baselines/b0_aegis_reproduce.py
 
 306 demo 只有 `datasets/NeRSembleReconst/avatars/306/point_cloud.ply` 和 `datasets/NeRSembleReconst/renders/306.png`，没有 parsing 标签。有 `.npy` 整数标签时走 `SemanticMask.from_parsing`（BiSeNet / CelebAMask-HQ id，见 `makeup/README.md`）。没有标签时，CPU 冒烟用 `documented_fallback_labels` 造一张同样 id 的标签图再交给 `from_parsing`。这张图不是 306 的解析结果。
 
-AEGIS 的 Foolbox L∞ PGD（B0-a 那条，`AEGIS._run_foolbox_attack`）和 `--adaptive-epsilon` 用的 `adaptive_linf_pgd_attack` 都只做 ε 裁剪，不乘妆容 mask。`--select-regions` 是 FLAME 区域子集，不是 `from_parsing`。约束在 `makeup.residual.project` / `apply` 和 `makeup/aegis_mask.py` 的 `projected_pgd_step`。步内钩子留给 james，见该文件的 TODO。
+AEGIS 的 Foolbox L∞ PGD（B0-a 那条，`AEGIS._run_foolbox_attack`）和 `--adaptive-epsilon` 用的 `adaptive_linf_pgd_attack` 原文都只做 ε 裁剪。`--select-regions` 是 FLAME 区域子集，不是 `from_parsing`。妆容约束仍是 `project_residual`。步内钩子在 `makeup/aegis_pgd_hook.py`（接上 PR #10 留给 james 的两个调用点，不再只是 stub）：
+
+- `helpers.py` 的 `adaptive_linf_pgd_attack`：符号步和逐高斯 ε 裁剪之后调用 `project_residual`。
+- `model.py` 的 `AEGIS._run_foolbox_attack`：B0-a 的 `linfpgd` 走 Foolbox `LinfProjectedGradientDescentAttack.project`（`x0 + clip(x-x0, ±ε)`）。补丁在 `attack(...)` 之前换上 `project`，每一步对残差做同一次投影。
+
+`install_makeup_pgd_hook` 只在已经有 `third_party/AEGIS` 时改那两个文件，并写入 `.gs_makeup_hook.json`。树不在时状态是 `tree_missing`，不克隆、不下载。`documented_fallback` 默认拒绝装进真实攻击。不要在导师点头前开 AutoDL GPU。细节见 `makeup/README.md`。
 
 CPU（无 GPU、无权重、不下载数据）：
 
@@ -91,7 +96,12 @@ python scripts/nersemble306_makeup_mask_smoke.py \
   --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
 ```
 
-`--launch` 只在 uv、CUDA、306 ply/png、AdaFace checkpoint、InsightFace `det_10g.onnx`、`GaussianAvatars` 都已经在盘上时才启动上面的命令。缺任何一项就跳过，避免脚本自己去下载。启动后的 AEGIS 进程仍然是原文 Foolbox 路径；妆容支撑约束以本仓库的投影为准。
+`--launch` 只在 uv、CUDA、306 ply/png、AdaFace checkpoint、InsightFace `det_10g.onnx`、`GaussianAvatars` 都已经在盘上时才启动上面的命令。缺任何一项就跳过，避免脚本自己去下载。先用真实 `306.npy` 跑 `--arm-hook`，再在 `third_party/AEGIS` 目录里启动，步内才会乘妆容 mask。没装钩子时进程仍是原文 Foolbox，CPU 冒烟里的投影才是支撑约束。不要在导师点头前开这次 GPU。
+
+```bash
+python scripts/nersemble306_makeup_mask_smoke.py --arm-hook \
+  --parsing third_party/AEGIS/datasets/NeRSembleReconst/parsing/306.npy
+```
 
 ## 实验矩阵（提交代码时对齐）
 | ID | 含义 |

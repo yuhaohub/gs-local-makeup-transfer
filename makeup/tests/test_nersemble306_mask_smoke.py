@@ -120,9 +120,18 @@ class NerSemble306MaskSmokeTest(unittest.TestCase):
         self.assertEqual(smoke["posthoc_outside_support_max_abs"], 0.0)
         self.assertTrue(smoke["apply_outside_unchanged"])
         self.assertTrue(smoke["apply_matches_projected_delta"])
-        self.assertEqual(smoke["aegis_hook"], "stub")
+        self.assertEqual(smoke["aegis_hook"], "in_loop")
+        self.assertEqual(
+            smoke["aegis_hook_api"],
+            "makeup.aegis_pgd_hook.install_makeup_pgd_hook",
+        )
+        self.assertEqual(smoke["hooked_adaptive_outside_support_max_abs"], 0.0)
+        self.assertEqual(smoke["hooked_foolbox_outside_support_max_abs"], 0.0)
+        self.assertGreater(smoke["epsilon_only_adaptive_outside_support_max_abs"], 0.0)
+        self.assertGreater(smoke["epsilon_only_foolbox_outside_support_max_abs"], 0.0)
         self.assertIn("TODO(james)", smoke["aegis_hook_todo"])
         self.assertIn("_run_foolbox_attack", smoke["aegis_hook_todo"])
+        self.assertIn("adaptive_linf_pgd_attack", smoke["aegis_hook_todo"])
         self.assertEqual(aegis_pgd_hook_stub(), AEGIS_HOOK_TODO)
 
     def test_explicit_parsing_array_and_sidecar(self) -> None:

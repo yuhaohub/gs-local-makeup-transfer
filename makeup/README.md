@@ -55,11 +55,24 @@ Smoke check (no GPU): `python makeup/tests/test_smoke.py`. If `torch` or `lpips`
 
 Otherwise `documented_fallback_labels` fills a label grid with the ids above and still calls `from_parsing`. That grid is not a parse of subject 306.
 
-`projected_pgd_step` is one L∞ sign step followed by that projection. AEGIS Foolbox L∞ PGD (the B0-a 306 path) and `adaptive_linf_pgd_attack` only clamp ε. The in-loop call site is a TODO in `makeup/aegis_mask.py` for james. `--select-regions` is a FLAME subset, not this mask.
+`projected_pgd_step` is one L∞ sign step followed by that projection. AEGIS Foolbox L∞ PGD (the B0-a 306 path) and `adaptive_linf_pgd_attack` only clamp ε on their own. `--select-regions` is a FLAME subset, not this mask.
+
+`makeup/aegis_pgd_hook.py` is the in-loop hook (it supersedes `aegis_pgd_hook_stub`). Checked against AEGIS `main` `e3d20445942cc3d41e912897675290e090f116f7`:
+
+- `adaptive_linf_pgd_attack` in `src/aegis/core/helpers.py` does `delta - step_size * sign(grad)` and clamps each Gaussian to ±ε. The patch calls `project_residual` on `delta_new` immediately after that clamp.
+- `AEGIS._run_foolbox_attack` in `src/aegis/core/model.py` delegates the B0-a `linfpgd` attack to Foolbox `LinfProjectedGradientDescentAttack`. The in-loop projection there is `LinfBaseGradientDescent.project`: `x0 + clip(x - x0, ±ε)`. The patch binds a `project` that runs `project_residual` on that residual before the next step. Other attack names are left alone.
+
+`install_makeup_pgd_hook` writes `.gs_makeup_hook.json` and `.gs_makeup_mask.npy` into the AEGIS root and inserts the calls above. It does not clone the tree. If `src/aegis/core/helpers.py` or `model.py` is missing, the status is `tree_missing`. If those files exist but the verified step text moved, the status is `anchors_mismatch` and nothing is written. `documented_fallback` is refused unless `allow_fallback=True` (that grid is not a parse of subject 306).
+
+Run `mask_avatar.py` from the AEGIS root so the config is picked up, or set `GS_MAKEUP_HOOK_CONFIG` to the json path. With no config, the inserted calls are no-ops. Do not start the AutoDL GPU run until the mentor greenlights it.
 
 ```bash
 python scripts/nersemble306_makeup_mask_smoke.py
+python scripts/nersemble306_makeup_mask_smoke.py --arm-hook --parsing path/to/306.npy
 python makeup/tests/test_nersemble306_mask_smoke.py
+python makeup/tests/test_aegis_pgd_hook.py
 ```
+
+`--arm-hook` calls `install_makeup_pgd_hook`. A missing tree still exits 0 after the CPU projection and records `aegis_hook_attach=tree_missing`. Without a real parsing map it records `refused_fallback` and does not patch.
 
 Run steps for the existing 306 ply/png and AdaFace weights on AutoDL are in the repo `README.md`. The makefile `mask_avatar` target is FaceScape 527; the 306 smoke does not call it.
