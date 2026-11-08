@@ -31,7 +31,7 @@ from makeup import (
 )
 from makeup.mask import DEFAULT_PARSING_LABELS
 from makeup.naturalness import NaturalnessLoss
-from makeup.residual import MakeupResidual
+from makeup.residual import MakeupResidual, project_dual_budget_residual
 
 
 class MakeupSmokeTest(unittest.TestCase):
@@ -69,6 +69,33 @@ class MakeupSmokeTest(unittest.TestCase):
         edited = apply_residual(base, np.full((4, 5, 3), 10.0), mask, epsilon)
         self.assertTrue(np.allclose(edited[0, 0], 0.2))
         self.assertTrue(np.allclose(edited[1, 1], 0.3))
+
+    def test_dual_budget_keeps_one_support_and_two_balls(self) -> None:
+        support = np.zeros((4,))
+        support[:3] = 1.0
+        soft = np.zeros((4,))
+        soft[1] = 1.0
+        delta = np.full((4, 3), 0.25)
+        projected = project_dual_budget_residual(delta, support, soft, 0.1, 0.07, kind="dc")
+        self.assertTrue(np.allclose(projected[0], 0.1))
+        self.assertTrue(np.allclose(projected[1], 0.07))
+        self.assertTrue(np.allclose(projected[2], 0.1))
+        self.assertTrue(np.all(projected[3] == 0.0))
+        hard_only = support.copy()
+        hard_only[1] = 0.0
+        self.assertTrue(
+            np.allclose(
+                projected,
+                project_residual(delta, hard_only, 0.1, kind="dc")
+                + project_residual(delta, soft, 0.07, kind="dc"),
+            )
+        )
+        widened = soft.copy()
+        widened[3] = 1.0
+        stayed = project_dual_budget_residual(delta, support, widened, 0.1, 0.07, kind="dc")
+        self.assertTrue(np.all(stayed[3] == 0.0))
+        with self.assertRaises(ValueError):
+            project_dual_budget_residual(delta, support, soft, 0.07, 0.1, kind="dc")
 
     def test_rgb_clip_defaults_on_and_dc_stays_unclipped(self) -> None:
         delta = np.ones((2, 2, 3))

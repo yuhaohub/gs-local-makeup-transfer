@@ -77,6 +77,8 @@ B2 does not register a new file and does not authorize `--launch`. It reuses fro
 | first T | `/root/autodl-fs/gs-assets/targets/celeba_T0.jpg` | `results/b2_celeba_T0/` |
 | later T | `/root/autodl-fs/gs-assets/targets/lfw_T0.jpg` | `results/b2_lfw_T0/` |
 | makeup mask | `/root/autodl-fs/gs-assets/parsing/306.npy` | same `306.npy` row. Not `masks/306.npy`. |
+| softskin, first T | same celeba still and `306.npy` | `results/b2_celeba_T0_softskin/` only. No new asset. |
+| softskin, later T | same lfw still and `306.npy` | `results/b2_lfw_T0_softskin/` only. No new asset. |
 | embedder | `/root/autodl-fs/gs-assets/weights/adaface_ir50_ms1mv2.ckpt` | same AdaFace row |
 
 Each still gets `summary.json` and `summary.csv` inside its own directory. Gate columns in that summary stay empty until a real run: `pipeline_ok`, `cos_adv_source`, `cos_adv_target`, `outside_m_abs_delta` (max `|δ|` outside M; the gate is 0). Flat historical summaries under `results/` stay where they are.

@@ -161,6 +161,67 @@ def project_residual(
     return MakeupResidual(epsilon, kind=kind).project(delta, mask)
 
 
+def project_dual_budget_residual(
+    delta: ArrayLike,
+    mask: MaskLike,
+    soft_mask: MaskLike,
+    epsilon: float,
+    soft_epsilon: float,
+    kind: Union[ResidualKind, str] = ResidualKind.RGB,
+) -> ArrayLike:
+    """Project one residual with two L∞ balls on a single support.
+
+    ``mask`` is the full support ``M``. ``soft_mask`` selects the tighter
+    ball and cannot add sites outside ``M``. Overlap uses ``soft_epsilon``
+    and is not written twice. Every other site inside ``M`` is
+    ``project_residual(..., epsilon)``. Sites outside ``M`` stay 0.
+
+    B2 ``--ablate softskin`` calls this from
+    ``MakeupPgdHook._project_numpy``. That method is the makeup step on
+    both AEGIS loops: ``adaptive_linf_pgd_attack`` (via
+    ``project_configured_delta``) and ``AEGIS._run_foolbox_attack`` (via
+    ``bind_foolbox_attack`` / ``reproject_foolbox``). The live B2 attack
+    is the Foolbox ``linfpgd`` path. Hard makeup stays on ``epsilon``
+    (0.1). Skin stays on ``soft_epsilon`` (0.07).
+
+    Args:
+        delta: candidate residual, ``(H, W, 3)`` or ``(N, 3)``.
+        mask: full support ``M``.
+        soft_mask: tighter subset, same spatial grid as ``mask``.
+        epsilon: hard-region bound ``ε ≥ soft_epsilon ≥ 0``.
+        soft_epsilon: soft-region bound.
+        kind: ``"rgb"`` or ``"dc"``.
+
+    Returns:
+        Feasible residual, same shape as ``delta``.
+
+    Raises:
+        ValueError: a bound is negative, ``soft_epsilon`` exceeds
+            ``epsilon``, or the masks do not match ``delta``.
+    """
+    if epsilon < 0 or soft_epsilon < 0:
+        raise ValueError("epsilon and soft_epsilon must be >= 0")
+    if soft_epsilon > epsilon:
+        raise ValueError(
+            f"soft_epsilon ({soft_epsilon}) must be <= epsilon ({epsilon})"
+        )
+    np = require_numpy()
+    values = np.asarray(delta, dtype=float)
+    support = _aligned_weight(as_mask_array(mask), values.shape)
+    soft = _aligned_weight(as_mask_array(soft_mask), values.shape)
+    soft = np.minimum(soft, support)
+    hard_only = np.where(soft > 0, 0.0, support)
+    hard = np.asarray(
+        project_residual(values, hard_only, epsilon, kind=kind),
+        dtype=float,
+    )
+    soft_projected = np.asarray(
+        project_residual(values, soft, soft_epsilon, kind=kind),
+        dtype=float,
+    )
+    return hard + soft_projected
+
+
 def apply_residual(
     base: ArrayLike,
     delta: ArrayLike,

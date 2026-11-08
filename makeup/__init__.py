@@ -25,7 +25,13 @@ from makeup.naturalness import (
     palette_loss,
     smoothness_loss,
 )
-from makeup.residual import MakeupResidual, ResidualKind, apply_residual, project_residual
+from makeup.residual import (
+    MakeupResidual,
+    ResidualKind,
+    apply_residual,
+    project_dual_budget_residual,
+    project_residual,
+)
 
 __all__ = [
     "REGIONS",
@@ -38,6 +44,7 @@ __all__ = [
     "lpips_loss",
     "naturalness_loss",
     "palette_loss",
+    "project_dual_budget_residual",
     "project_residual",
     "semantic_mask",
     "smoothness_loss",
