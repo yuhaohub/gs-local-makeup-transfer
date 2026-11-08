@@ -28,7 +28,9 @@ Default map: `makeup.mask.DEFAULT_PARSING_LABELS`. These are the class ids emitt
 | 4, 5 | l_eye, r_eye | eye |
 | 12, 13 | u_lip, l_lip | lip |
 
-Other ids, including background `0`, eyeglasses `6`, nose `10`, inner mouth `11`, and hair `17`, stay outside `M`. Regions named in the label map are stored even when no pixel has that id. Ids that share a region are combined with a pixelwise max.
+Other ids, including background `0`, eyeglasses `6`, nose `10`, inner mouth `11`, and hair `17`, stay outside `M`. Ears (`7`, `8`) and neck (`14`) are not in this default either. Regions named in the label map are stored even when no pixel has that id. Ids that share a region are combined with a pixelwise max.
+
+B2 in-M ablations pass a `label_map` for one run (`--ablate ablate_noskin` drops id 1 only). That switch does not edit `DEFAULT_PARSING_LABELS` and does not add nose, hair, ears, or neck. The armed DC mask samples this image M with `sample_image_mask` at PLY Gaussian means (`dc_mask_lift=projected-means`). James measured that PLY-reprojected support at about 2.31% of Gaussians for the full default and about 0.20% without skin. Those fractions are the coverage story, not a threshold, and they are not an older pixel-coverage figure. See the repository README「B2」section.
 
 ### NeRSemble 306 label map
 

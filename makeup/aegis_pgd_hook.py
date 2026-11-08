@@ -967,6 +967,7 @@ def dc_hook_from_parsing(
     subject: Union[str, int] = "306",
     radius: Optional[float] = None,
     fovy_deg: Optional[float] = None,
+    label_map=None,
 ) -> MakeupPgdHook:
     """Arm a DC hook for B0-a from a parsing map.
 
@@ -976,11 +977,15 @@ def dc_hook_from_parsing(
     OrbitCamera and ``M`` is sampled to ``(N,)``. When ``means`` is omitted
     the image mask is stored and ``mask_avatar`` samples ``get_xyz`` before
     the first Foolbox step. The hook kind is always ``dc``.
+
+    ``label_map`` is forwarded to ``SemanticMask.from_parsing``. ``None``
+    keeps ``DEFAULT_PARSING_LABELS``. A B2 in-M ablation passes a subset
+    for that run only. It does not edit the product default.
     """
     np = require_numpy()
     grid = np.asarray(labels)
     if grid.ndim == 1:
-        mask = SemanticMask.from_parsing(grid)
+        mask = SemanticMask.from_parsing(grid, label_map=label_map)
         return MakeupPgdHook(
             mask,
             epsilon,
@@ -993,7 +998,10 @@ def dc_hook_from_parsing(
         raise ValueError(
             f"parsing labels must have shape (N,) or (H, W), got {grid.shape}"
         )
-    image = np.asarray(SemanticMask.from_parsing(grid).union(), dtype=np.float64)
+    image = np.asarray(
+        SemanticMask.from_parsing(grid, label_map=label_map).union(),
+        dtype=np.float64,
+    )
     chosen_radius = b0a_camera_radius() if radius is None else float(radius)
     chosen_fovy = FRONTAL_FOVY_DEG if fovy_deg is None else float(fovy_deg)
     camera = {

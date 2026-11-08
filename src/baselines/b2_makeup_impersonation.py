@@ -20,6 +20,12 @@
 
 B1's attack module is imported and left on its full-face path. Passing no
 B2 flags does not arm a hook and does not start a process.
+
+``--ablate`` / ``--mask-labels`` is an in-M ablation for one run. The
+default ``full`` mode keeps ``DEFAULT_PARSING_LABELS`` and writes
+``results/b2_<T>/``. ``ablate_noskin`` drops parser label 1 only and
+writes ``results/b2_<T>_ablate_noskin/``. Neither mode adds nose, hair,
+ears, or neck, and neither edits the product default.
 """
 
 from __future__ import annotations
@@ -95,6 +101,135 @@ class MakeupHookRequired(RuntimeError):
     """B2 will not run the attack without the kind=dc makeup hook."""
 
 
+class MaskLabelError(ValueError):
+    """The name is not an in-M ablation of ``DEFAULT_PARSING_LABELS``."""
+
+
+# Product makeup set. ``None`` / omitted CLI keeps this mode and does not
+# pass a ``label_map``, so ``from_parsing`` still reads the constant.
+MASK_LABELS_FULL = "full"
+# Mentor-locked in-M ablation: drop skin/cheek label 1 only. The mode
+# name is the summary suffix (``results/b2_<T>_ablate_noskin/``).
+MASK_LABELS_NOSKIN = "ablate_noskin"
+
+_MASK_LABEL_ALIASES = {
+    "full": MASK_LABELS_FULL,
+    "default": MASK_LABELS_FULL,
+    MASK_LABELS_NOSKIN: MASK_LABELS_NOSKIN,
+}
+MASK_LABEL_CHOICES = tuple(sorted(_MASK_LABEL_ALIASES))
+
+# Frozen product directories. An ablation must not write these.
+PRODUCT_FULL_SLOTS = frozenset({"b2_celeba_T0", "b2_lfw_T0"})
+
+# ``ablate_noskin`` keeps these BiSeNet ids and no others. Cheek is only id 1.
+_NOSKIN_LABEL_IDS = frozenset({2, 3, 4, 5, 12, 13})
+
+# Intended support story for the armed DC mask. Not a pass/fail threshold
+# and not a pixel fraction of the parsing image. ``sample_image_mask``
+# reads M at PLY Gaussian means; once those means are sampled the hook
+# records ``dc_mask_lift=projected-means``. James measured that
+# PLY reprojection at about 2.31% of Gaussians for full M and about
+# 0.20% after dropping skin. Do not replace those figures with an older
+# pixel-coverage number.
+
+
+def resolve_mask_labels(name: str | None):
+    """Return ``(canonical mode, label_map or None)``.
+
+    ``None``, ``full``, and ``default`` return ``("full", None)``. The
+    hook then calls ``from_parsing`` without a map, so the product
+    default stays ``DEFAULT_PARSING_LABELS`` (skin/cheek 1, brow 2/3,
+    eye 4/5, lip 12/13). Nose, hair, ears, and neck stay outside that
+    default.
+
+    ``ablate_noskin`` returns a map of that default with label 1
+    removed. The constant itself is not edited. This is an in-M
+    ablation, not a new makeup definition. The summary directory is
+    ``results/b2_<T>_ablate_noskin/``.
+
+    Raises:
+        MaskLabelError: the name is unknown, or ``ablate_noskin`` would
+            no longer be exactly ``{2, 3, 4, 5, 12, 13}``.
+    """
+    if name is None or str(name).strip() == "":
+        return MASK_LABELS_FULL, None
+    key = str(name).strip().casefold()
+    if key not in _MASK_LABEL_ALIASES:
+        known = ", ".join(MASK_LABEL_CHOICES)
+        raise MaskLabelError(
+            f"Unknown in-M ablation {name!r}. Known names: {known}. "
+            "This switch only drops labels from DEFAULT_PARSING_LABELS. "
+            "It does not add nose, hair, ears, or neck."
+        )
+    canonical = _MASK_LABEL_ALIASES[key]
+    if canonical == MASK_LABELS_FULL:
+        return MASK_LABELS_FULL, None
+    from makeup.mask import DEFAULT_PARSING_LABELS, MakeupRegion
+
+    mapping = {
+        int(label_id): region
+        for label_id, region in DEFAULT_PARSING_LABELS.items()
+        if int(label_id) != 1
+    }
+    if set(mapping) != _NOSKIN_LABEL_IDS:
+        raise MaskLabelError(
+            "ablate_noskin must be DEFAULT_PARSING_LABELS without label 1 "
+            f"(skin/cheek), got {sorted(mapping)}."
+        )
+    if any(region == MakeupRegion.CHEEK for region in mapping.values()):
+        raise MaskLabelError("ablate_noskin must not keep a cheek label.")
+    if 1 not in DEFAULT_PARSING_LABELS:
+        raise MaskLabelError(
+            "DEFAULT_PARSING_LABELS no longer contains label 1. "
+            "Refusing to treat ablate_noskin as the product ablation."
+        )
+    return MASK_LABELS_NOSKIN, mapping
+
+
+def parsing_label_ids(mask_labels: str | None = None) -> list[int]:
+    """Sorted parser ids for this mode. ``full`` reads the product constant."""
+    _mode, mapping = resolve_mask_labels(mask_labels)
+    if mapping is None:
+        from makeup.mask import DEFAULT_PARSING_LABELS
+
+        return sorted(int(label_id) for label_id in DEFAULT_PARSING_LABELS)
+    return sorted(int(label_id) for label_id in mapping)
+
+
+def mask_label_fields(mask_labels: str | None = None, requested: str | None = None) -> dict:
+    """Summary fields for the label set. The default constant is not a copy."""
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    asked = mode if requested is None else str(requested)
+    return {
+        "mask_labels": mode,
+        "mask_labels_requested": asked,
+        "parsing_label_ids": parsing_label_ids(mode),
+        "label_map": (
+            "DEFAULT_PARSING_LABELS" if mode == MASK_LABELS_FULL else f"ablation:{mode}"
+        ),
+        "ablation_changes_default_m": False,
+    }
+
+
+def _ablation_note(mask_labels: str) -> str:
+    """Empty for the product set, so the default summary note stays put."""
+    if mask_labels == MASK_LABELS_FULL:
+        return ""
+    return (
+        " In-M ablation "
+        f"{mask_labels} drops parser label 1 (skin/cheek) and keeps "
+        "brows, eyes, and lips {2, 3, 4, 5, 12, 13}. "
+        "This does not change DEFAULT_PARSING_LABELS. "
+        "Nose, hair, ears, and neck stay outside M. "
+        "The armed DC mask is sample_image_mask at PLY Gaussian means "
+        "(dc_mask_lift=projected-means). "
+        "James measured that PLY-reprojected support at about 2.31% of "
+        "Gaussians for full M and about 0.20% without skin. "
+        "Those fractions are the coverage story, not a pass/fail gate."
+    )
+
+
 def b2_criterion_spec() -> dict:
     """B1 targeted-match criterion, with the makeup hook required."""
     spec = b1.b1_criterion_spec()
@@ -161,18 +296,35 @@ def summary_stem(path: Path) -> str:
     return stem
 
 
-def summary_slot(path: Path) -> str:
-    return f"b2_{summary_stem(path)}"
+def summary_slot(path: Path, mask_labels: str | None = None) -> str:
+    """``b2_<T>`` for the product set.
+
+    ``ablate_noskin`` is ``b2_<T>_ablate_noskin``. The mode name is already
+    the suffix, so it is not prefixed with a second ``ablate_``.
+    """
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    slot = f"b2_{summary_stem(path)}"
+    if mode == MASK_LABELS_FULL:
+        return slot
+    return f"{slot}_{mode}"
 
 
-def default_summary_dir(image: Path) -> Path:
-    """One still, one directory. Never the flat ``results/`` folder."""
-    return RESULTS_DIR / summary_slot(image)
+def default_summary_dir(image: Path, mask_labels: str | None = None) -> Path:
+    """One still, one directory. Never the flat ``results/`` folder.
+
+    ``full`` stays ``results/b2_<T>/``. ``ablate_noskin`` uses
+    ``results/b2_<T>_ablate_noskin/`` and does not overwrite the product slot.
+    """
+    return RESULTS_DIR / summary_slot(image, mask_labels)
 
 
-def resolve_summary_dir(flag: str | None, image: Path) -> Path:
+def resolve_summary_dir(
+    flag: str | None,
+    image: Path,
+    mask_labels: str | None = None,
+) -> Path:
     if flag is None:
-        return default_summary_dir(image)
+        return default_summary_dir(image, mask_labels)
     path = Path(flag).expanduser()
     if not path.is_absolute():
         path = REPO_ROOT / path
@@ -210,6 +362,32 @@ def assert_summary_slot(directory: Path) -> None:
         raise SummarySlotError(
             f"Refusing summary directory {resolved.name}: "
             "that name is a historical flat summary."
+        )
+
+
+def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) -> None:
+    """Keep an in-M ablation out of the product full-M summary directories.
+
+    ``full`` may write ``results/b2_<T>/``. ``ablate_noskin`` must not write
+    ``results/b2_celeba_T0/`` or ``results/b2_lfw_T0/``.
+
+    Raises:
+        SummarySlotError: a non-default mode resolved to a product slot.
+    """
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    if mode == MASK_LABELS_FULL:
+        return
+    resolved = directory.resolve()
+    protected = {(RESULTS_DIR / name).resolve() for name in PRODUCT_FULL_SLOTS}
+    protected.add(default_summary_dir(image, MASK_LABELS_FULL).resolve())
+    if resolved in protected:
+        raise SummarySlotError(
+            f"In-M ablation {mode} refuses {directory}. "
+            "That directory is the product makeup set "
+            "(DEFAULT_PARSING_LABELS). "
+            f"The ablation summary is results/b2_<T>_{mode}/ "
+            "(for example results/b2_celeba_T0_ablate_noskin/). "
+            "Ablation does not change the makeup definition."
         )
 
 
@@ -251,14 +429,22 @@ def expected_outputs(plan: b1.AttackPlan, aegis_root: Path) -> tuple[Path, Path]
     return avatar, render
 
 
-def user_command(image: Path, parsing: Path) -> str:
-    """The GPU command. The default CLI does not pass ``--launch``."""
-    return (
-        "python src/baselines/b2_makeup_impersonation.py "
-        f"--impersonation-image {image} "
-        f"--parsing {parsing} "
-        "--arm-hook --launch"
-    )
+def user_command(image: Path, parsing: Path, mask_labels: str | None = None) -> str:
+    """The GPU command. The default CLI does not pass ``--launch``.
+
+    ``full`` omits ``--ablate``. A narrower in-M mode includes the
+    canonical name and still does not turn launch on by itself.
+    """
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    parts = [
+        "python src/baselines/b2_makeup_impersonation.py",
+        f"--impersonation-image {image}",
+        f"--parsing {parsing}",
+    ]
+    if mode != MASK_LABELS_FULL:
+        parts.append(f"--ablate {mode}")
+    parts.append("--arm-hook --launch")
+    return " ".join(parts)
 
 
 def _rel(path: Path) -> str:
@@ -349,9 +535,13 @@ def gate_holds(metrics: dict) -> bool:
     return float(outside) <= OUTSIDE_GATE
 
 
-def intended_hook(parsing: Path) -> dict:
+def intended_hook(
+    parsing: Path,
+    mask_labels: str | None = None,
+    requested: str | None = None,
+) -> dict:
     """Hook contract recorded before a parse is loaded."""
-    return {
+    spec = {
         "kind": "dc",
         "epsilon": b1.EPSILON,
         "subject": b1.SUBJECT,
@@ -370,6 +560,8 @@ def intended_hook(parsing: Path) -> dict:
             "kind=dc samples M to (N,) at Gaussian means"
         ),
     }
+    spec.update(mask_label_fields(mask_labels, requested))
+    return spec
 
 
 def hook_config_path(aegis_root: Path) -> Path:
@@ -378,8 +570,12 @@ def hook_config_path(aegis_root: Path) -> Path:
     return Path(aegis_root) / CONFIG_NAME
 
 
-def build_dc_hook(parsing: Path, aegis_root: Path):
+def build_dc_hook(parsing: Path, aegis_root: Path, label_map=None):
     """Build the #15 DC hook from a real ``306.npy``. No documented fallback.
+
+    ``label_map=None`` keeps ``DEFAULT_PARSING_LABELS``. An in-M ablation
+    passes the subset from ``resolve_mask_labels`` and does not edit that
+    constant.
 
     Returns:
         ``(hook, means_source)``. ``means_source`` is ``ply-xyz``,
@@ -398,7 +594,13 @@ def build_dc_hook(parsing: Path, aegis_root: Path):
     means_source = "per-gaussian-labels"
     if getattr(labels, "ndim", 0) == 2:
         means, means_source = load_b0a_dc_means(aegis_root, b1.SUBJECT)
-    hook = dc_hook_from_parsing(labels, b1.EPSILON, means, subject=b1.SUBJECT)
+    hook = dc_hook_from_parsing(
+        labels,
+        b1.EPSILON,
+        means,
+        subject=b1.SUBJECT,
+        label_map=label_map,
+    )
     if hook.kind != "dc":
         raise ValueError(f"B2 makeup hook kind must be dc, got {hook.kind}")
     return hook, means_source
@@ -494,8 +696,15 @@ def worker_command(
     parsing: Path,
     summary_out: Path,
     aegis_root: Path,
+    mask_labels: str | None = None,
 ) -> list[str]:
-    return [
+    """Worker argv. The parent has already installed the DC mask.
+
+    ``--ablate`` is recorded for a non-default mode. The worker does not
+    build a second mask. ``full`` leaves the argv unchanged.
+    """
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    command = [
         "uv",
         "run",
         "python",
@@ -511,13 +720,25 @@ def worker_command(
         "--summary-out",
         str(summary_out),
     ]
+    if mode != MASK_LABELS_FULL:
+        command.extend(["--ablate", mode])
+    return command
 
 
-def start_worker(plan, parsing, summary_out, config_path, aegis_root, runner, env=None):
+def start_worker(
+    plan,
+    parsing,
+    summary_out,
+    config_path,
+    aegis_root,
+    runner,
+    env=None,
+    mask_labels: str | None = None,
+):
     """Spawn the uv worker with the makeup hook armed."""
     disarm_check = armed_environment(config_path, aegis_root) if env is None else env
     assert_makeup_armed(disarm_check)
-    command = worker_command(plan, parsing, summary_out, aegis_root)
+    command = worker_command(plan, parsing, summary_out, aegis_root, mask_labels)
     joined = " ".join(command)
     if "--refuse-hook" in command or "--adaptive-epsilon" in joined or "--select-regions" in joined:
         raise MakeupHookRequired(
@@ -590,10 +811,19 @@ def _primary_status(blockers: list[str]) -> str:
     return codes[0]
 
 
-def _empty_metrics(plan: b1.AttackPlan, parsing: Path, summary_dir: Path, aegis_root: Path, gpu) -> dict:
+def _empty_metrics(
+    plan: b1.AttackPlan,
+    parsing: Path,
+    summary_dir: Path,
+    aegis_root: Path,
+    gpu,
+    mask_labels: str | None = None,
+    mask_labels_requested: str | None = None,
+) -> dict:
     avatar_out, render_out = expected_outputs(plan, aegis_root)
+    labels = mask_label_fields(mask_labels, mask_labels_requested)
     return {
-        "command": user_command(plan.impersonation_image, parsing),
+        "command": user_command(plan.impersonation_image, parsing, labels["mask_labels"]),
         "command_attempted": False,
         "return_code": None,
         "log_tail": "",
@@ -622,7 +852,11 @@ def _empty_metrics(plan: b1.AttackPlan, parsing: Path, summary_dir: Path, aegis_
         "parsing_present": b1.image_ready(parsing),
         "corpus": b1.corpus_for(plan.impersonation_image),
         "smoke_target": b1.smoke_target_for(plan.impersonation_image),
-        "summary_slot": summary_slot(plan.impersonation_image),
+        "summary_slot": summary_slot(plan.impersonation_image, labels["mask_labels"]),
+        "mask_labels": labels["mask_labels"],
+        "mask_labels_requested": labels["mask_labels_requested"],
+        "parsing_label_ids": labels["parsing_label_ids"],
+        "ablation_changes_default_m": False,
         "criterion": b2_criterion_spec(),
         "reference_embedding": "impersonation_image",
         "cos_adv_source": None,
@@ -631,7 +865,11 @@ def _empty_metrics(plan: b1.AttackPlan, parsing: Path, summary_dir: Path, aegis_
         "outside_m_abs_delta_gate": 0,
         "aggregated_cosine_to_target": None,
         "makeup_hook_armed": False,
-        "hook": intended_hook(parsing),
+        "hook": intended_hook(
+            parsing,
+            labels["mask_labels"],
+            labels["mask_labels_requested"],
+        ),
         "aegis_root": _rel(aegis_root),
         "expected_output_avatar": _rel(avatar_out),
         "expected_output_render": _rel(render_out),
@@ -640,6 +878,7 @@ def _empty_metrics(plan: b1.AttackPlan, parsing: Path, summary_dir: Path, aegis_
 
 
 def _payload(plan, parsing, summary_dir, *, status, note, metrics, pipeline_ok=False) -> dict:
+    mode = str((metrics or {}).get("mask_labels") or MASK_LABELS_FULL)
     return {
         "experiment_id": EXPERIMENT_ID,
         "desc": EXPERIMENT_DESC,
@@ -648,13 +887,18 @@ def _payload(plan, parsing, summary_dir, *, status, note, metrics, pipeline_ok=F
         "subject": plan.subject,
         "corpus": b1.corpus_for(plan.impersonation_image),
         "smoke_target": b1.smoke_target_for(plan.impersonation_image),
-        "summary_slot": summary_slot(plan.impersonation_image),
+        "summary_slot": summary_slot(plan.impersonation_image, mode),
+        "mask_labels": mode,
+        "parsing_label_ids": list(
+            (metrics or {}).get("parsing_label_ids") or parsing_label_ids(mode)
+        ),
+        "ablation_changes_default_m": False,
         "summary_dir": _rel(summary_dir),
         "parsing_path": str(parsing),
         "bootstrapped": b1.aegis_bootstrapped(),
         "recorded_at": _now(),
         "metrics": metrics,
-        "note": note,
+        "note": f"{note}{_ablation_note(mode)}",
     }
 
 
@@ -693,6 +937,7 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "makeup_hook_armed",
                 "hook_kind",
                 "parsing_path",
+                "mask_labels",
                 "impersonation_image",
                 "summary_dir",
                 "command",
@@ -714,6 +959,7 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "makeup_hook_armed": str(bool(metrics.get("makeup_hook_armed"))).lower(),
                 "hook_kind": hook.get("kind") or "",
                 "parsing_path": metrics.get("parsing_path") or payload.get("parsing_path") or "",
+                "mask_labels": metrics.get("mask_labels") or payload.get("mask_labels") or "",
                 "impersonation_image": metrics.get("impersonation_image") or "",
                 "summary_dir": payload.get("summary_dir") or "",
                 "command": metrics.get("command") or "",
@@ -800,9 +1046,17 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
 
     image_text = resolve_impersonation_image(args.impersonation_image)
     parsing = resolve_parsing_path(args.parsing)
-    summary_dir = resolve_summary_dir(args.summary_dir, Path(image_text))
+    try:
+        mode, _label_map = resolve_mask_labels(args.ablate)
+    except MaskLabelError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    requested = MASK_LABELS_FULL if args.ablate is None else str(args.ablate)
+    image_path = Path(image_text)
+    summary_dir = resolve_summary_dir(args.summary_dir, image_path, mode)
     try:
         assert_summary_slot(summary_dir)
+        assert_ablation_slot(summary_dir, image_path, mode)
     except SummarySlotError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -813,12 +1067,28 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         assert_subject_306(args.subject)
     except ValueError as exc:
         plan = b1.build_plan(image_text, launch=False)
-        metrics = _empty_metrics(plan, parsing, summary_dir, Path(args.aegis_root), b1.gpu_name())
+        metrics = _empty_metrics(
+            plan,
+            parsing,
+            summary_dir,
+            Path(args.aegis_root),
+            b1.gpu_name(),
+            mask_labels=mode,
+            mask_labels_requested=requested,
+        )
         return _refuse(summary_dir, plan, parsing, metrics, "refused_subject", str(exc))
 
     plan = b1.build_plan(image_text, launch=False)
     aegis_root = Path(args.aegis_root).expanduser()
-    metrics = _empty_metrics(plan, parsing, summary_dir, aegis_root, b1.gpu_name())
+    metrics = _empty_metrics(
+        plan,
+        parsing,
+        summary_dir,
+        aegis_root,
+        b1.gpu_name(),
+        mask_labels=mode,
+        mask_labels_requested=requested,
+    )
     try:
         return _execute_plan(
             args,
@@ -899,8 +1169,10 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
             return _refuse(
                 summary_dir, plan, parsing, metrics, "awaiting_parsing", note
             )
+        mode = str(metrics.get("mask_labels") or MASK_LABELS_FULL)
+        _mode, label_map = resolve_mask_labels(mode)
         try:
-            hook, means_source = build_dc_hook(parsing, aegis_root)
+            hook, means_source = build_dc_hook(parsing, aegis_root, label_map)
             attach = install_b2_hook(hook, aegis_root)
         except (ValueError, OSError, ImportError) as exc:
             note = f"B2 could not build the kind=dc hook: {exc}"
@@ -911,6 +1183,9 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
         spec["parsing_path"] = str(parsing)
         spec["parsing_present"] = True
         spec["mask_dirname_forbidden"] = FORBIDDEN_MASK_DIR
+        spec.update(
+            mask_label_fields(mode, metrics.get("mask_labels_requested"))
+        )
         metrics["hook"] = spec
         metrics["makeup_hook_armed"] = bool(attach.get("armed"))
         if attach.get("status") == "anchors_mismatch":
@@ -974,7 +1249,8 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
     fd, worker_name = tempfile.mkstemp(prefix="b2-worker-", suffix=".json")
     os.close(fd)
     worker_path = Path(worker_name)
-    command = worker_command(plan, parsing, worker_path, aegis_root)
+    mode = str(metrics.get("mask_labels") or MASK_LABELS_FULL)
+    command = worker_command(plan, parsing, worker_path, aegis_root, mode)
     metrics["command_attempted"] = True
     metrics["worker_command"] = " ".join(command)
     proc = None
@@ -986,6 +1262,7 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
             config_path,
             aegis_root,
             runner,
+            mask_labels=mode,
         )
     except MakeupHookRequired as exc:
         metrics["command_attempted"] = False
@@ -1264,6 +1541,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--ablate",
+        "--mask-labels",
+        default=None,
+        choices=MASK_LABEL_CHOICES,
+        metavar="MODE",
+        help=(
+            "In-M ablation for this run. Default full (omit the flag) keeps "
+            "DEFAULT_PARSING_LABELS: skin/cheek 1, brow 2/3, eye 4/5, lip 12/13. "
+            "ablate_noskin drops label 1 and keeps {2, 3, 4, 5, 12, 13}. "
+            "default is an alias of full. "
+            "Does not add nose, hair, ears, or neck, and does not edit the "
+            "product default. ablate_noskin writes "
+            "results/b2_<T>_ablate_noskin/ and does not overwrite "
+            "results/b2_celeba_T0/. Does not launch."
+        ),
+    )
+    parser.add_argument(
         "--arm-hook",
         action="store_true",
         help=(
@@ -1317,6 +1611,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Directory for summary.json and summary.csv. "
             "Default: results/b2_<T>/ (results/b2_celeba_T0/ for the first still). "
+            "ablate_noskin defaults to results/b2_<T>_ablate_noskin/ "
+            "(results/b2_celeba_T0_ablate_noskin/ for the first still) and "
+            "refuses the product full-M directory. "
             "The flat results/ directory is refused."
         ),
     )
