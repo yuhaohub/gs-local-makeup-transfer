@@ -2,7 +2,7 @@
 baselines:
   B0: {desc: "AEGIS original de-identification (formal subject NeRSemble 306; B0-b FaceScape 527 cancelled)"}
   B1: {desc: "AEGIS interface + targeted impersonation (full face, CelebA/LFW still image, no makeup mask; first smoke celeba_T0.jpg)"}
-  B2: {desc: "B1 + makeup semantic mask M (kind=dc on parsing/306.npy) and amplitude constraint; summary results/b2_<T>/; no --launch by default"}
+  B2: {desc: "B1 + makeup semantic mask M (kind=dc on parsing/306.npy) and amplitude constraint; summary results/b2_<T>/; ablate_noskin writes results/b2_<T>_ablate_noskin/; complementary ablate_onlyskin (label 1 only) writes results/b2_<T>_ablate_onlyskin/; default M unchanged; no --launch by default"}
 method:
   M: {desc: "B2 + DPA proxies + preprocess-invariant transforms"}
 ablations:

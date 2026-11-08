@@ -282,7 +282,7 @@ python src/baselines/b2_makeup_impersonation.py
 - `--launch` 必须和 `--arm-hook` 一起用。缺照片、缺 `parsing/306.npy`、缺 306 头像或 CUDA 时不启动。
 - `--parsing` 如果落在 `masks/` 下，或文件名不是 `306.npy`，会被拒绝。
 - `--adaptive-epsilon` 和 `--select-regions` 会被拒绝。前者不是这条 Foolbox 路径，后者是 FLAME 区域，不是 `from_parsing`。
-- `--ablate`（同 `--mask-labels`）：这次运行的 in-M 消融。默认 `full`（省略，或写 `default`）仍用 `DEFAULT_PARSING_LABELS`。导师锁定的模式只有 `ablate_noskin`：去掉标签 1。这不改变妆容 M 的定义。
+- `--ablate`（同 `--mask-labels`）：这次运行的 in-M 消融。默认 `full`（省略，或写 `default`）仍用 `DEFAULT_PARSING_LABELS`。导师锁定的两刀互补：`ablate_noskin` 去掉标签 1，`ablate_onlyskin` 只留标签 1。这不改变妆容 M 的定义，也不把默认标签集扩大。
 
 ### in-M 消融（不改变妆容定义）
 
@@ -294,22 +294,39 @@ python src/baselines/b2_makeup_impersonation.py
 | --- | --- | --- |
 | `full`（默认，可省略；`default` 同义） | 上面的默认全集 | `results/b2_celeba_T0/` |
 | `ablate_noskin` | 去掉 1，只留 {2, 3, 4, 5, 12, 13} | `results/b2_celeba_T0_ablate_noskin/` |
+| `ablate_onlyskin` | 只留 {1}，去掉唇、眼、眉 | `results/b2_celeba_T0_ablate_onlyskin/` |
 
-LFW 后一刀对应 `results/b2_lfw_T0_ablate_noskin/`。默认命令仍然不加 `--launch`。
+`ablate_onlyskin` 是 `ablate_noskin` 的互补刀：两刀的标签并起来仍是默认 M，交集为空。LFW 后一刀对应 `results/b2_lfw_T0_ablate_noskin/` 和 `results/b2_lfw_T0_ablate_onlyskin/`。`ablate_onlyskin` 不覆盖 `results/b2_celeba_T0/`、`results/b2_lfw_T0/`，也不覆盖 `*_ablate_noskin/`。默认命令仍然不加 `--launch`。不把鼻子、头发、耳朵、脖子补进 M，也不改 `DEFAULT_PARSING_LABELS`。
+
+图像域覆盖来自已经测过的 `(H, W)` 像素，不是高斯计数。默认 M 大约 10.22%；`ablate_noskin` 大约 0.7888%；因此 `ablate_onlyskin` 大约 9.43%（约 10.22 − 0.79）。`--arm-hook` 在绑定 ply 上仍是 `dc_mask_lift=pending-get-xyz`，这些百分比不是已经 lift 的 `(N,)`。
+
+PLY `projected-means` 是暂定（provisional）数字，要等 launch 打出 `mask (N,) nz=… frac=…` 才写进 summary 的 `dc_mask_shape` / `dc_mask_nonzero` / `dc_mask_fraction` / `dc_mask_support_line`。在那一行出现之前不要把下面的计数当成这次运行的测量：full 大约 2.307%（2054/89021）；noskin 大约 0.2033%（181）；onlyskin 大约 2.10%（约 1873 = 2054 − 181）。
 
 无 GPU 的消融接线（只写摘要，不装钩子，不开 GPU）：
 
 ```bash
 python src/baselines/b2_makeup_impersonation.py --ablate ablate_noskin
+python src/baselines/b2_makeup_impersonation.py --ablate ablate_onlyskin
 ```
 
-清单放行之后才加 `--arm-hook --launch`。摘要进 `results/b2_celeba_T0_ablate_noskin/`，不覆盖 `results/b2_celeba_T0/`：
+清单放行之后才加 `--arm-hook --launch`。`ablate_noskin` 的摘要进 `results/b2_celeba_T0_ablate_noskin/`，不覆盖 `results/b2_celeba_T0/`：
 
 ```bash
 python src/baselines/b2_makeup_impersonation.py \
   --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
   --parsing /root/autodl-fs/gs-assets/parsing/306.npy \
   --ablate ablate_noskin \
+  --arm-hook \
+  --launch
+```
+
+互补刀 `ablate_onlyskin` 同样先不加 `--launch`。放行之后摘要进 `results/b2_celeba_T0_ablate_onlyskin/`，不覆盖上面的 full 目录，也不覆盖 `results/b2_celeba_T0_ablate_noskin/`：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
+  --parsing /root/autodl-fs/gs-assets/parsing/306.npy \
+  --ablate ablate_onlyskin \
   --arm-hook \
   --launch
 ```
@@ -345,7 +362,7 @@ python src/baselines/tests/test_b2_makeup_impersonation.py
 |----|------|
 | B0 | AEGIS 原文去身份复现（正式主体 NeRSemble 306；B0-b / FaceScape 527 已取消） |
 | B1 | 同接口改定向冒充（全脸，CelebA/LFW 静止照片，无妆容 mask；第一刀 celeba_T0.jpg） |
-| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；in-M 消融 `ablate_noskin` 写 `results/b2_<T>_ablate_noskin/`，不改默认 M；默认不 `--launch` |
+| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；in-M 消融 `ablate_noskin` 写 `results/b2_<T>_ablate_noskin/`，互补刀 `ablate_onlyskin`（只留标签 1）写 `results/b2_<T>_ablate_onlyskin/`，不改默认 M，也不互相覆盖；默认不 `--launch` |
 | M  | + DPA + 预处理不变（主方法） |
 | A1/A2/A3 | 消融 DPA / 预处理 / univ |
 | C1 | 中期最优管线 |
