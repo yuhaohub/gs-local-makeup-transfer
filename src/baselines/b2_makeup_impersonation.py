@@ -125,13 +125,13 @@ PRODUCT_FULL_SLOTS = frozenset({"b2_celeba_T0", "b2_lfw_T0"})
 # ``ablate_noskin`` keeps these BiSeNet ids and no others. Cheek is only id 1.
 _NOSKIN_LABEL_IDS = frozenset({2, 3, 4, 5, 12, 13})
 
-# Intended support story for the armed DC mask. Not a pass/fail threshold
-# and not a pixel fraction of the parsing image. ``sample_image_mask``
-# reads M at PLY Gaussian means; once those means are sampled the hook
-# records ``dc_mask_lift=projected-means``. James measured that
-# PLY reprojection at about 2.31% of Gaussians for full M and about
-# 0.20% after dropping skin. Do not replace those figures with an older
-# pixel-coverage number.
+# Arm time on the bound 306 ply is not a Gaussian mask. ``--arm-hook``
+# records ``dc_mask_lift=pending-get-xyz`` and an ``(H, W)`` mask
+# (B2-a/b: ``mask_shape=[540, 960]``, about 10.22% of pixels).
+# ``ensure_dc_mask`` samples ``get_xyz`` later and only then logs
+# ``mask (N,) nz=… frac=…`` and sets ``dc_mask_lift=projected-means``.
+# Those logged numbers are the run's (N,) support. Do not fill them
+# from an older smoke line or from the image-pixel fraction.
 
 
 def resolve_mask_labels(name: str | None):
@@ -222,11 +222,10 @@ def _ablation_note(mask_labels: str) -> str:
         "brows, eyes, and lips {2, 3, 4, 5, 12, 13}. "
         "This does not change DEFAULT_PARSING_LABELS. "
         "Nose, hair, ears, and neck stay outside M. "
-        "The armed DC mask is sample_image_mask at PLY Gaussian means "
-        "(dc_mask_lift=projected-means). "
-        "James measured that PLY-reprojected support at about 2.31% of "
-        "Gaussians for full M and about 0.20% without skin. "
-        "Those fractions are the coverage story, not a pass/fail gate."
+        "--arm-hook keeps dc_mask_lift=pending-get-xyz and the (H, W) mask. "
+        "ensure_dc_mask runs sample_image_mask when get_xyz is available; "
+        "that step logs mask (N,) nz=… frac=… and sets "
+        "dc_mask_lift=projected-means."
     )
 
 
@@ -556,8 +555,10 @@ def intended_hook(
         "attach_status": "not_requested",
         "config": None,
         "layout": (
-            "(H, W) parsing is the semantic source; "
-            "kind=dc samples M to (N,) at Gaussian means"
+            "(H, W) parsing is armed as the image mask "
+            "(dc_mask_lift=pending-get-xyz on the bound 306 ply). "
+            "ensure_dc_mask samples it to (N,) at get_xyz and then "
+            "records dc_mask_lift=projected-means"
         ),
     }
     spec.update(mask_label_fields(mask_labels, requested))
@@ -607,10 +608,27 @@ def build_dc_hook(parsing: Path, aegis_root: Path, label_map=None):
 
 
 def describe_hook(hook, means_source: str, attach: dict) -> dict:
+    from makeup._numpy import require_numpy
     from makeup.mask import as_mask_array
 
-    weight = as_mask_array(hook.mask)
-    return {
+    np = require_numpy()
+    weight = np.asarray(as_mask_array(hook.mask), dtype=float)
+    if hook.dc_mask_lift == "pending-get-xyz":
+        layout = (
+            "(H, W) image mask is armed; dc_mask_lift=pending-get-xyz. "
+            "The (N,) mask does not exist until ensure_dc_mask samples get_xyz."
+        )
+    elif hook.dc_mask_lift == "projected-means":
+        layout = (
+            "(N,) mask was sampled with sample_image_mask; "
+            "dc_mask_lift=projected-means."
+        )
+    else:
+        layout = (
+            "(H, W) parsing is the semantic source; "
+            "kind=dc samples M to (N,) at Gaussian means"
+        )
+    spec = {
         "kind": hook.kind,
         "epsilon": hook.epsilon,
         "subject": hook.subject,
@@ -621,11 +639,15 @@ def describe_hook(hook, means_source: str, attach: dict) -> dict:
         "armed": bool(attach.get("armed")),
         "attach_status": attach.get("status"),
         "config": attach.get("config"),
-        "layout": (
-            "(H, W) parsing is the semantic source; "
-            "kind=dc samples M to (N,) at Gaussian means"
-        ),
+        "layout": layout,
     }
+    total = int(weight.size)
+    nonzero = int(np.count_nonzero(weight > 0)) if total else 0
+    fraction = float(nonzero / total) if total else 0.0
+    if weight.ndim == 2:
+        spec["image_mask_nonzero"] = nonzero
+        spec["image_mask_fraction"] = fraction
+    return spec
 
 
 def install_b2_hook(hook, aegis_root: Path) -> dict:
@@ -863,6 +885,10 @@ def _empty_metrics(
         "cos_adv_target": None,
         "outside_m_abs_delta": None,
         "outside_m_abs_delta_gate": 0,
+        "dc_mask_shape": None,
+        "dc_mask_nonzero": None,
+        "dc_mask_fraction": None,
+        "dc_mask_support_line": None,
         "aggregated_cosine_to_target": None,
         "makeup_hook_armed": False,
         "hook": intended_hook(
@@ -933,6 +959,7 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "cos_adv_source",
                 "cos_adv_target",
                 "outside_m_abs_delta",
+                "dc_mask_support_line",
                 "gpu",
                 "makeup_hook_armed",
                 "hook_kind",
@@ -955,6 +982,7 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "cos_adv_source": "" if cos_source is None else cos_source,
                 "cos_adv_target": "" if cos_target is None else cos_target,
                 "outside_m_abs_delta": "" if outside is None else outside,
+                "dc_mask_support_line": metrics.get("dc_mask_support_line") or "",
                 "gpu": metrics.get("gpu") or "",
                 "makeup_hook_armed": str(bool(metrics.get("makeup_hook_armed"))).lower(),
                 "hook_kind": hook.get("kind") or "",
@@ -1311,9 +1339,23 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
         "output_render",
         "output_avatar_bytes",
         "output_render_bytes",
+        "dc_mask_shape",
+        "dc_mask_nonzero",
+        "dc_mask_fraction",
+        "dc_mask_support_line",
     ):
         if key in worker_payload and worker_payload[key] is not None:
             metrics[key] = worker_payload[key]
+    if metrics.get("dc_mask_support_line"):
+        hook = dict(metrics.get("hook") or {})
+        hook["dc_mask_lift"] = "projected-means"
+        if metrics.get("dc_mask_shape") is not None:
+            hook["mask_shape"] = list(metrics["dc_mask_shape"])
+        hook["layout"] = (
+            "(N,) mask sampled by ensure_dc_mask at get_xyz; "
+            "dc_mask_lift=projected-means."
+        )
+        metrics["hook"] = hook
     if worker_payload.get("gpu"):
         metrics["gpu"] = worker_payload["gpu"]
     parsed = _parse_aggregated_cosine(log)
@@ -1394,7 +1436,12 @@ def run_attack(plan: b1.AttackPlan, config_path: Path, aegis_root: Path) -> dict
     """
     env = armed_environment(config_path, aegis_root)
     assert_makeup_armed(env)
-    from makeup.aegis_pgd_hook import HOOK_CONFIG_ENV, clear_hook_state, current_hook
+    from makeup.aegis_pgd_hook import (
+        HOOK_CONFIG_ENV,
+        clear_hook_state,
+        current_hook,
+        last_dc_mask_support,
+    )
 
     os.environ[HOOK_CONFIG_ENV] = env[HOOK_CONFIG_ENV]
     os.environ["B2_MAKEUP_HOOK"] = "on"
@@ -1460,6 +1507,9 @@ def run_attack(plan: b1.AttackPlan, config_path: Path, aegis_root: Path) -> dict
             result["error"] = (
                 f"scoring failed after the attack saved: {exc.__class__.__name__}: {exc}"
             )
+        support = last_dc_mask_support()
+        if support:
+            result.update(support)
         return result
     finally:
         AEGIS._run_foolbox_attack = original
@@ -1503,6 +1553,14 @@ def worker_main(args: argparse.Namespace) -> int:
             "gpu": b1.gpu_name(),
             "error": f"{exc.__class__.__name__}: {exc}",
         }
+        try:
+            from makeup.aegis_pgd_hook import last_dc_mask_support
+
+            support = last_dc_mask_support()
+        except ImportError:
+            support = None
+        if support:
+            payload.update(support)
         out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         return 1
     out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

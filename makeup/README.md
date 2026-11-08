@@ -30,7 +30,7 @@ Default map: `makeup.mask.DEFAULT_PARSING_LABELS`. These are the class ids emitt
 
 Other ids, including background `0`, eyeglasses `6`, nose `10`, inner mouth `11`, and hair `17`, stay outside `M`. Ears (`7`, `8`) and neck (`14`) are not in this default either. Regions named in the label map are stored even when no pixel has that id. Ids that share a region are combined with a pixelwise max.
 
-B2 in-M ablations pass a `label_map` for one run (`--ablate ablate_noskin` drops id 1 only). That switch does not edit `DEFAULT_PARSING_LABELS` and does not add nose, hair, ears, or neck. The armed DC mask samples this image M with `sample_image_mask` at PLY Gaussian means (`dc_mask_lift=projected-means`). James measured that PLY-reprojected support at about 2.31% of Gaussians for the full default and about 0.20% without skin. Those fractions are the coverage story, not a threshold, and they are not an older pixel-coverage figure. See the repository README「B2」section.
+B2 in-M ablations pass a `label_map` for one run (`--ablate ablate_noskin` drops id 1 only). That switch does not edit `DEFAULT_PARSING_LABELS` and does not add nose, hair, ears, or neck. On the bound 306 ply, `--arm-hook` leaves `dc_mask_lift=pending-get-xyz` and the `(H, W)` mask (B2-a/b: `[540, 960]`, about 10.22% of pixels). `ensure_dc_mask` samples `get_xyz` later, logs `mask (N,) nz=… frac=…`, and then sets `dc_mask_lift=projected-means`. See the repository README「B2」section.
 
 ### NeRSemble 306 label map
 
@@ -130,6 +130,6 @@ python makeup/tests/test_nersemble306_mask_smoke.py
 python makeup/tests/test_aegis_pgd_hook.py
 ```
 
-`--arm-hook` calls `install_makeup_pgd_hook`. A missing tree still exits 0 after the CPU projection and records `aegis_hook_attach=tree_missing`. Without a real parsing map it records `refused_fallback` and does not patch. With a real `(H, W)` map the summary records `armed_hook_kind=dc`. `dc_mask_lift=projected-means` means the `(N,)` mask was written at arm time from unbound ply `xyz`. `dc_mask_lift=pending-get-xyz` (the NeRSemble 306 ply, which has `binding_0`) means `mask_avatar` builds that `(N,)` mask from `get_xyz` before the first Foolbox step.
+`--arm-hook` calls `install_makeup_pgd_hook`. A missing tree still exits 0 after the CPU projection and records `aegis_hook_attach=tree_missing`. Without a real parsing map it records `refused_fallback` and does not patch. With a real `(H, W)` map the summary records `armed_hook_kind=dc`. `dc_mask_lift=projected-means` means the `(N,)` mask was written at arm time from unbound ply `xyz`. `dc_mask_lift=pending-get-xyz` (the NeRSemble 306 ply, which has `binding_0`) means the armed mask is still `(H, W)`. `ensure_dc_mask` builds the `(N,)` mask from `get_xyz` before the first Foolbox step, prints `mask (N,) nz=… frac=…`, and then records `dc_mask_lift=projected-means`. `--arm-hook` itself does not print that `(N,)` line.
 
 Run steps for the existing 306 ply/png and AdaFace weights on AutoDL are in the repo `README.md`. The makefile `mask_avatar` target is FaceScape 527; the 306 smoke does not call it.

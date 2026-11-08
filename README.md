@@ -288,7 +288,7 @@ python src/baselines/b2_makeup_impersonation.py
 
 `makeup/mask.py` 的 `DEFAULT_PARSING_LABELS` 仍是产品默认 M：1（skin/cheek）、2/3（brow）、4/5（eye）、12/13（lip）。鼻子、头发、耳朵、脖子不进入这个默认。消融只在这一次 B2 里把 `label_map` 交给 `from_parsing`，不改那个常量，也不把结果写进 `results/b2_celeba_T0/`。
 
-运行时的 DC mask 是 `sample_image_mask`：把解析图上的 M 采到 PLY 高斯均值上，采样完成后 `dc_mask_lift=projected-means`。James 量过的 PLY 重投影支撑大约是全 M 的 2.31% 高斯，去掉 skin 之后大约是 0.20%。这是覆盖率的说明，不是通过门禁，也不要用更早的像素占比代替这两个数。
+`--arm-hook` 在绑定了 FLAME 的 306 ply 上还不是高斯 mask。武装状态是 `dc_mask_lift=pending-get-xyz`，`mask_shape` 是图像 `(H, W)`。B2-a/b 记到的是 `[540, 960]`，图像域 M 大约占 10.22% 像素。`(N,)` 要等 launch 时 `get_xyz` 可用，`ensure_dc_mask` 才调用 `sample_image_mask`。那一步才把 `dc_mask_lift` 写成 `projected-means`，并打一行 `mask (N,) nz=… frac=…`。这行和同样的 `dc_mask_shape` / `dc_mask_nonzero` / `dc_mask_fraction` 会进 summary JSON。不要把武装状态说成已经是 `projected-means`，也不要用更早的 smoke 打印代替这次的 `(N,)` 计数。
 
 | 模式 | 标签 | 摘要目录 |
 | --- | --- | --- |

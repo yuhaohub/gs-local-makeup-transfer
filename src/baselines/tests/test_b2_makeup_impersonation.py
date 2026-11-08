@@ -877,9 +877,11 @@ class AblateNoskinTest(unittest.TestCase):
             self.assertFalse(payload["ablation_changes_default_m"])
             self.assertIn("--ablate ablate_noskin", payload["metrics"]["command"])
             self.assertIn("--arm-hook --launch", payload["metrics"]["command"])
-            self.assertIn("sample_image_mask", payload["note"])
-            self.assertIn("2.31%", payload["note"])
-            self.assertIn("0.20%", payload["note"])
+            self.assertIn("pending-get-xyz", payload["note"])
+            self.assertIn("ensure_dc_mask", payload["note"])
+            self.assertIn("mask (N,) nz=", payload["note"])
+            self.assertIsNone(payload["metrics"]["dc_mask_support_line"])
+            self.assertNotIn("2.31%", payload["note"])
             self.assertNotIn("23.2", payload["note"])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -951,6 +953,125 @@ class AblateNoskinTest(unittest.TestCase):
         self.assertEqual(float(weight[6]), 1.0)
         self.assertEqual(payload["metrics"]["hook"]["label_map"], "DEFAULT_PARSING_LABELS")
 
+    def test_arm_hook_on_image_parsing_stays_pending_get_xyz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            labels = np.zeros((4, 6), dtype=np.int64)
+            labels[0, 0] = 12
+            labels[1, 1] = 1
+            labels[2, 2] = 10
+            parsing = root / "parsing" / "306.npy"
+            parsing.parent.mkdir(parents=True)
+            np.save(parsing, labels)
+            code = b2.main(
+                [
+                    "--arm-hook",
+                    "--parsing",
+                    str(parsing),
+                    "--aegis-root",
+                    str(root / "no-aegis"),
+                    "--summary-dir",
+                    str(root / "out"),
+                ],
+                runner=_boom,
+            )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            product = b2.RESULTS_DIR / "b2_celeba_T0" / "summary.json"
+            self.assertTrue(product.is_file())
+        self.assertEqual(code, 0)
+        hook = payload["metrics"]["hook"]
+        self.assertEqual(hook["dc_mask_lift"], "pending-get-xyz")
+        self.assertEqual(hook["mask_shape"], [4, 6])
+        self.assertEqual(hook["image_mask_nonzero"], 2)
+        self.assertAlmostEqual(hook["image_mask_fraction"], 2 / 24)
+        self.assertIsNone(payload["metrics"]["dc_mask_support_line"])
+        self.assertIsNone(payload["metrics"]["dc_mask_shape"])
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertIn("pending-get-xyz", hook["layout"])
+        self.assertNotIn("projected-means", hook["dc_mask_lift"])
+
+    def test_launch_summary_records_materialized_n_support(self) -> None:
+        def runner(command, **kwargs):
+            out = Path(command[command.index("--summary-out") + 1])
+            out.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "cos_adv_source": 0.2,
+                        "cos_adv_target": 0.8,
+                        "outside_m_abs_delta": 0.0,
+                        "dc_mask_shape": [89021],
+                        "dc_mask_nonzero": 178,
+                        "dc_mask_fraction": 178 / 89021,
+                        "dc_mask_support_line": "mask (89021,) nz=178 frac=0.001999",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class Proc:
+                returncode = 0
+                stdout = "mask (89021,) nz=178 frac=0.001999\n"
+                stderr = ""
+
+            return Proc()
+
+        def fake_install(hook, aegis_root):
+            config = Path(aegis_root) / ".gs_makeup_hook.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                json.dumps(
+                    {
+                        "kind": "dc",
+                        "subject": "306",
+                        "epsilon": 0.1,
+                        "dc_mask_lift": "pending-get-xyz",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {"status": "patched", "armed": True, "config": str(config), "note": "test"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            image = root / "celeba_T0.jpg"
+            image.write_bytes(b"still")
+            with (
+                patch.object(b2, "install_b2_hook", side_effect=fake_install),
+                patch.object(b2, "collect_b2_blockers", return_value=[]),
+            ):
+                code = b2.main(
+                    [
+                        "--arm-hook",
+                        "--launch",
+                        "--ablate",
+                        "ablate_noskin",
+                        "--impersonation-image",
+                        str(image),
+                        "--parsing",
+                        str(parsing),
+                        "--aegis-root",
+                        str(root / "AEGIS"),
+                        "--summary-dir",
+                        str(root / "out"),
+                    ],
+                    runner=runner,
+                )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            csv_text = (root / "out" / "summary.csv").read_text(encoding="utf-8")
+            self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_ablate_noskin").exists())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0_ablate_noskin")
+        metrics = payload["metrics"]
+        self.assertEqual(metrics["dc_mask_shape"], [89021])
+        self.assertEqual(metrics["dc_mask_nonzero"], 178)
+        self.assertAlmostEqual(metrics["dc_mask_fraction"], 178 / 89021)
+        self.assertEqual(metrics["dc_mask_support_line"], "mask (89021,) nz=178 frac=0.001999")
+        self.assertEqual(metrics["hook"]["dc_mask_lift"], "projected-means")
+        self.assertEqual(metrics["hook"]["mask_shape"], [89021])
+        self.assertIn("mask (89021,) nz=178 frac=0.001999", csv_text)
+
 
 class DocsTest(unittest.TestCase):
     def test_readme_documents_b2_cli_without_default_launch(self) -> None:
@@ -970,10 +1091,12 @@ class DocsTest(unittest.TestCase):
         self.assertIn("results/b2_celeba_T0_ablate_noskin/", section)
         self.assertIn("--ablate ablate_noskin", section)
         self.assertIn("DEFAULT_PARSING_LABELS", section)
-        self.assertIn("sample_image_mask", section)
-        self.assertIn("dc_mask_lift=projected-means", section)
-        self.assertIn("2.31%", section)
-        self.assertIn("0.20%", section)
+        self.assertIn("pending-get-xyz", section)
+        self.assertIn("ensure_dc_mask", section)
+        self.assertIn("[540, 960]", section)
+        self.assertIn("10.22%", section)
+        self.assertIn("mask (N,) nz=", section)
+        self.assertNotIn("2.31%", section)
         self.assertNotIn("23.2", section)
         self.assertNotIn("no_skin", section)
         self.assertIn("outside_m_abs_delta", section)
@@ -1010,10 +1133,12 @@ class DocsTest(unittest.TestCase):
         self.assertIn("results/b2_celeba_T0_ablate_noskin/", text)
         self.assertIn("--ablate ablate_noskin", text)
         self.assertIn("DEFAULT_PARSING_LABELS", text)
-        self.assertIn("sample_image_mask", text)
-        self.assertIn("dc_mask_lift=projected-means", text)
-        self.assertIn("2.31%", text)
-        self.assertIn("0.20%", text)
+        self.assertIn("pending-get-xyz", text)
+        self.assertIn("ensure_dc_mask", text)
+        self.assertIn("[540, 960]", text)
+        self.assertIn("10.22%", text)
+        self.assertIn("mask (N,) nz=", text)
+        self.assertNotIn("2.31%", text)
         self.assertNotIn("23.2", text)
         self.assertIn("parsing/306.npy", text)
 
