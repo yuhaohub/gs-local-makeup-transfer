@@ -219,6 +219,49 @@ class OutsideMaskTest(unittest.TestCase):
         self.assertGreater(b2.outside_m_abs_delta(clean, raw, hook.mask), 0.0)
         self.assertLessEqual(float(np.max(np.abs(projected))), 0.1 + 1e-8)
 
+    def test_outside_m_aligns_att_tensor_with_foolbox_batch(self) -> None:
+        """Reproduce the AutoDL crash: (89021, 1, 3) vs (1, 89021, 1, 3).
+
+        Clean DC stays ``att_tensor`` ``(N, 1, 3)``. Foolbox saves
+        ``unsqueeze(0)`` as ``(1, N, 1, 3)``. N=89021 is the 306 count
+        from that run. Outside-M |δ| follows Gaussian index after both
+        sides are squeezed to ``(N, 3)``.
+        """
+        n = 89021
+        inside = 7
+        outside = n - 1
+        mask = np.zeros((n,), dtype=float)
+        mask[inside] = 1.0
+        clean = np.zeros((n, 1, 3), dtype=float)
+        adv = np.zeros((1, n, 1, 3), dtype=float)
+        clean[inside, 0, 0] = 0.5
+        adv[0, inside, 0, 0] = 1.0
+        clean[outside, 0, 2] = 0.125
+        adv[0, outside, 0, 2] = 0.375
+        self.assertEqual(clean.shape, (89021, 1, 3))
+        self.assertEqual(adv.shape, (1, 89021, 1, 3))
+        self.assertNotEqual(clean.shape, adv.shape)
+        self.assertAlmostEqual(b2.outside_m_abs_delta(clean, adv, mask), 0.25)
+
+        matched = adv.copy()
+        matched[0, outside, 0, 2] = clean[outside, 0, 2]
+        self.assertEqual(b2.outside_m_abs_delta(clean, matched, mask), 0.0)
+
+        clean_n3 = clean[:, 0, :]
+        adv_n13 = adv[0]
+        self.assertEqual(clean_n3.shape, (n, 3))
+        self.assertEqual(adv_n13.shape, (n, 1, 3))
+        self.assertAlmostEqual(b2.outside_m_abs_delta(clean_n3, adv, mask), 0.25)
+        self.assertAlmostEqual(b2.outside_m_abs_delta(clean, adv_n13, mask), 0.25)
+        self.assertAlmostEqual(b2.outside_m_abs_delta(clean_n3, adv_n13, mask), 0.25)
+
+        with self.assertRaises(ValueError) as caught:
+            b2.outside_m_abs_delta(clean, np.zeros((1, n - 1, 1, 3)), mask)
+        message = str(caught.exception)
+        self.assertIn("clean and adversarial DC shapes differ", message)
+        self.assertIn("(89021, 1, 3)", message)
+        self.assertIn("(1, 89020, 1, 3)", message)
+
     def test_gate_requires_all_four_measurements(self) -> None:
         base = {
             "return_code": 0,
