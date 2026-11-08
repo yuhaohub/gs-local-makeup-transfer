@@ -30,7 +30,7 @@ Default map: `makeup.mask.DEFAULT_PARSING_LABELS`. These are the class ids emitt
 
 Other ids, including background `0`, eyeglasses `6`, nose `10`, inner mouth `11`, and hair `17`, stay outside `M`. Ears (`7`, `8`) and neck (`14`) are not in this default either. Regions named in the label map are stored even when no pixel has that id. Ids that share a region are combined with a pixelwise max.
 
-B2 in-M ablations pass a `label_map` for one run (`--ablate ablate_noskin` drops id 1 only). That switch does not edit `DEFAULT_PARSING_LABELS` and does not add nose, hair, ears, or neck. On the bound 306 ply, `--arm-hook` leaves `dc_mask_lift=pending-get-xyz` and the `(H, W)` mask (B2-a/b: `[540, 960]`, about 10.22% of pixels). `ensure_dc_mask` samples `get_xyz` later, logs `mask (N,) nz=… frac=…`, and then sets `dc_mask_lift=projected-means`. See the repository README「B2」section.
+B2 in-M ablations pass a `label_map` for one run. `--ablate ablate_noskin` drops id 1 and keeps {2, 3, 4, 5, 12, 13}. `--ablate ablate_onlyskin` is the complement and keeps id 1 only. Neither switch edits `DEFAULT_PARSING_LABELS`, expands that set, or adds nose, hair, ears, or neck. On the bound 306 ply, `--arm-hook` leaves `dc_mask_lift=pending-get-xyz` and the `(H, W)` mask (B2-a/b: `[540, 960]`, about 10.22% of pixels; noskin about 0.7888%; onlyskin about 9.43%, which is about 10.22 − 0.79). `ensure_dc_mask` samples `get_xyz` later, logs `mask (N,) nz=… frac=…`, and then sets `dc_mask_lift=projected-means`. PLY projected-means fractions are provisional until that line is printed: full about 2.307% (2054/89021), noskin about 0.2033% (181), onlyskin about 2.10% (about 1873). See the repository README「B2」section.
 
 ### NeRSemble 306 label map
 

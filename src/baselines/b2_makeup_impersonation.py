@@ -24,8 +24,10 @@ B2 flags does not arm a hook and does not start a process.
 ``--ablate`` / ``--mask-labels`` is an in-M ablation for one run. The
 default ``full`` mode keeps ``DEFAULT_PARSING_LABELS`` and writes
 ``results/b2_<T>/``. ``ablate_noskin`` drops parser label 1 only and
-writes ``results/b2_<T>_ablate_noskin/``. Neither mode adds nose, hair,
-ears, or neck, and neither edits the product default.
+writes ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` is the
+complement: label 1 only, written to ``results/b2_<T>_ablate_onlyskin/``.
+Neither ablation adds nose, hair, ears, or neck, and neither edits the
+product default or overwrites the other slot.
 """
 
 from __future__ import annotations
@@ -111,19 +113,27 @@ MASK_LABELS_FULL = "full"
 # Mentor-locked in-M ablation: drop skin/cheek label 1 only. The mode
 # name is the summary suffix (``results/b2_<T>_ablate_noskin/``).
 MASK_LABELS_NOSKIN = "ablate_noskin"
+# Complementary knife: keep skin/cheek label 1 only. Suffix is
+# ``results/b2_<T>_ablate_onlyskin/``. It does not replace noskin.
+MASK_LABELS_ONLYSKIN = "ablate_onlyskin"
 
 _MASK_LABEL_ALIASES = {
     "full": MASK_LABELS_FULL,
     "default": MASK_LABELS_FULL,
     MASK_LABELS_NOSKIN: MASK_LABELS_NOSKIN,
+    MASK_LABELS_ONLYSKIN: MASK_LABELS_ONLYSKIN,
 }
 MASK_LABEL_CHOICES = tuple(sorted(_MASK_LABEL_ALIASES))
 
 # Frozen product directories. An ablation must not write these.
 PRODUCT_FULL_SLOTS = frozenset({"b2_celeba_T0", "b2_lfw_T0"})
+_FROZEN_STILL_STEMS = ("celeba_T0", "lfw_T0")
 
 # ``ablate_noskin`` keeps these BiSeNet ids and no others. Cheek is only id 1.
+# ``ablate_onlyskin`` keeps that cheek id and drops exactly the noskin set.
 _NOSKIN_LABEL_IDS = frozenset({2, 3, 4, 5, 12, 13})
+_ONLYSKIN_LABEL_IDS = frozenset({1})
+_PRODUCT_LABEL_IDS = _NOSKIN_LABEL_IDS | _ONLYSKIN_LABEL_IDS
 
 # Arm time on the bound 306 ply is not a Gaussian mask. ``--arm-hook``
 # records ``dc_mask_lift=pending-get-xyz`` and an ``(H, W)`` mask
@@ -144,13 +154,16 @@ def resolve_mask_labels(name: str | None):
     default.
 
     ``ablate_noskin`` returns a map of that default with label 1
-    removed. The constant itself is not edited. This is an in-M
-    ablation, not a new makeup definition. The summary directory is
-    ``results/b2_<T>_ablate_noskin/``.
+    removed. ``ablate_onlyskin`` returns the complement: label 1 only.
+    The constant itself is not edited. These are in-M ablations, not a
+    new makeup definition. Summary directories are
+    ``results/b2_<T>_ablate_noskin/`` and
+    ``results/b2_<T>_ablate_onlyskin/``.
 
     Raises:
-        MaskLabelError: the name is unknown, or ``ablate_noskin`` would
-            no longer be exactly ``{2, 3, 4, 5, 12, 13}``.
+        MaskLabelError: the name is unknown, ``ablate_noskin`` would
+            no longer be exactly ``{2, 3, 4, 5, 12, 13}``, or
+            ``ablate_onlyskin`` would no longer be exactly ``{1}``.
     """
     if name is None or str(name).strip() == "":
         return MASK_LABELS_FULL, None
@@ -159,32 +172,59 @@ def resolve_mask_labels(name: str | None):
         known = ", ".join(MASK_LABEL_CHOICES)
         raise MaskLabelError(
             f"Unknown in-M ablation {name!r}. Known names: {known}. "
-            "This switch only drops labels from DEFAULT_PARSING_LABELS. "
-            "It does not add nose, hair, ears, or neck."
+            "This switch only subsets DEFAULT_PARSING_LABELS. "
+            "It does not add nose, hair, ears, or neck, and it does not "
+            "expand that default."
         )
     canonical = _MASK_LABEL_ALIASES[key]
     if canonical == MASK_LABELS_FULL:
         return MASK_LABELS_FULL, None
     from makeup.mask import DEFAULT_PARSING_LABELS, MakeupRegion
 
+    if set(int(label_id) for label_id in DEFAULT_PARSING_LABELS) != _PRODUCT_LABEL_IDS:
+        raise MaskLabelError(
+            "DEFAULT_PARSING_LABELS must stay "
+            f"{sorted(_PRODUCT_LABEL_IDS)}. "
+            "Refusing an in-M ablation that would follow a changed default."
+        )
+    if canonical == MASK_LABELS_NOSKIN:
+        mapping = {
+            int(label_id): region
+            for label_id, region in DEFAULT_PARSING_LABELS.items()
+            if int(label_id) != 1
+        }
+        if set(mapping) != _NOSKIN_LABEL_IDS:
+            raise MaskLabelError(
+                "ablate_noskin must be DEFAULT_PARSING_LABELS without label 1 "
+                f"(skin/cheek), got {sorted(mapping)}."
+            )
+        if any(region == MakeupRegion.CHEEK for region in mapping.values()):
+            raise MaskLabelError("ablate_noskin must not keep a cheek label.")
+        if 1 not in DEFAULT_PARSING_LABELS:
+            raise MaskLabelError(
+                "DEFAULT_PARSING_LABELS no longer contains label 1. "
+                "Refusing to treat ablate_noskin as the product ablation."
+            )
+        return MASK_LABELS_NOSKIN, mapping
     mapping = {
         int(label_id): region
         for label_id, region in DEFAULT_PARSING_LABELS.items()
-        if int(label_id) != 1
+        if int(label_id) in _ONLYSKIN_LABEL_IDS
     }
-    if set(mapping) != _NOSKIN_LABEL_IDS:
+    if set(mapping) != _ONLYSKIN_LABEL_IDS:
         raise MaskLabelError(
-            "ablate_noskin must be DEFAULT_PARSING_LABELS without label 1 "
+            "ablate_onlyskin must be DEFAULT_PARSING_LABELS label 1 only "
             f"(skin/cheek), got {sorted(mapping)}."
         )
-    if any(region == MakeupRegion.CHEEK for region in mapping.values()):
-        raise MaskLabelError("ablate_noskin must not keep a cheek label.")
-    if 1 not in DEFAULT_PARSING_LABELS:
+    if mapping.get(1) != MakeupRegion.CHEEK:
+        raise MaskLabelError("ablate_onlyskin must keep label 1 as cheek.")
+    dropped = set(int(label_id) for label_id in DEFAULT_PARSING_LABELS) - set(mapping)
+    if dropped != _NOSKIN_LABEL_IDS:
         raise MaskLabelError(
-            "DEFAULT_PARSING_LABELS no longer contains label 1. "
-            "Refusing to treat ablate_noskin as the product ablation."
+            "ablate_onlyskin must drop exactly the ablate_noskin ids "
+            f"{sorted(_NOSKIN_LABEL_IDS)}, got {sorted(dropped)}."
         )
-    return MASK_LABELS_NOSKIN, mapping
+    return MASK_LABELS_ONLYSKIN, mapping
 
 
 def parsing_label_ids(mask_labels: str | None = None) -> list[int]:
@@ -212,21 +252,36 @@ def mask_label_fields(mask_labels: str | None = None, requested: str | None = No
     }
 
 
+_ABLATION_LIFT_NOTE = (
+    "This does not change DEFAULT_PARSING_LABELS. "
+    "Nose, hair, ears, and neck stay outside M. "
+    "--arm-hook keeps dc_mask_lift=pending-get-xyz and the (H, W) mask. "
+    "ensure_dc_mask runs sample_image_mask when get_xyz is available; "
+    "that step logs mask (N,) nz=… frac=… and sets "
+    "dc_mask_lift=projected-means."
+)
+
+
 def _ablation_note(mask_labels: str) -> str:
     """Empty for the product set, so the default summary note stays put."""
     if mask_labels == MASK_LABELS_FULL:
         return ""
-    return (
-        " In-M ablation "
-        f"{mask_labels} drops parser label 1 (skin/cheek) and keeps "
-        "brows, eyes, and lips {2, 3, 4, 5, 12, 13}. "
-        "This does not change DEFAULT_PARSING_LABELS. "
-        "Nose, hair, ears, and neck stay outside M. "
-        "--arm-hook keeps dc_mask_lift=pending-get-xyz and the (H, W) mask. "
-        "ensure_dc_mask runs sample_image_mask when get_xyz is available; "
-        "that step logs mask (N,) nz=… frac=… and sets "
-        "dc_mask_lift=projected-means."
-    )
+    if mask_labels == MASK_LABELS_NOSKIN:
+        head = (
+            " In-M ablation "
+            "ablate_noskin drops parser label 1 (skin/cheek) and keeps "
+            "brows, eyes, and lips {2, 3, 4, 5, 12, 13}. "
+        )
+    elif mask_labels == MASK_LABELS_ONLYSKIN:
+        head = (
+            " In-M ablation "
+            "ablate_onlyskin keeps parser label 1 (skin/cheek) only and drops "
+            "brows, eyes, and lips {2, 3, 4, 5, 12, 13}. "
+            "It is complementary to ablate_noskin. "
+        )
+    else:
+        head = f" In-M ablation {mask_labels}. "
+    return head + _ABLATION_LIFT_NOTE
 
 
 def b2_criterion_spec() -> dict:
@@ -298,8 +353,9 @@ def summary_stem(path: Path) -> str:
 def summary_slot(path: Path, mask_labels: str | None = None) -> str:
     """``b2_<T>`` for the product set.
 
-    ``ablate_noskin`` is ``b2_<T>_ablate_noskin``. The mode name is already
-    the suffix, so it is not prefixed with a second ``ablate_``.
+    ``ablate_noskin`` is ``b2_<T>_ablate_noskin``. ``ablate_onlyskin`` is
+    ``b2_<T>_ablate_onlyskin``. The mode name is already the suffix, so it
+    is not prefixed with a second ``ablate_``.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
     slot = f"b2_{summary_stem(path)}"
@@ -312,7 +368,9 @@ def default_summary_dir(image: Path, mask_labels: str | None = None) -> Path:
     """One still, one directory. Never the flat ``results/`` folder.
 
     ``full`` stays ``results/b2_<T>/``. ``ablate_noskin`` uses
-    ``results/b2_<T>_ablate_noskin/`` and does not overwrite the product slot.
+    ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` uses
+    ``results/b2_<T>_ablate_onlyskin/``. An ablation does not overwrite
+    the product slot or the other ablation slot.
     """
     return RESULTS_DIR / summary_slot(image, mask_labels)
 
@@ -364,30 +422,62 @@ def assert_summary_slot(directory: Path) -> None:
         )
 
 
-def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) -> None:
-    """Keep an in-M ablation out of the product full-M summary directories.
+def frozen_slot_names(mode: str) -> frozenset[str]:
+    """Directory names this mode owns for the frozen CelebA and LFW stills."""
+    canonical, _mapping = resolve_mask_labels(mode)
+    if canonical == MASK_LABELS_FULL:
+        return PRODUCT_FULL_SLOTS
+    return frozenset(f"b2_{stem}_{canonical}" for stem in _FROZEN_STILL_STEMS)
 
-    ``full`` may write ``results/b2_<T>/``. ``ablate_noskin`` must not write
-    ``results/b2_celeba_T0/`` or ``results/b2_lfw_T0/``.
 
-    Raises:
-        SummarySlotError: a non-default mode resolved to a product slot.
+def foreign_summary_dirs(image: Path, mask_labels: str | None) -> set[Path]:
+    """Slots this mode must not write.
+
+    ``full`` owns ``results/b2_<T>/``. ``ablate_noskin`` owns
+    ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` owns
+    ``results/b2_<T>_ablate_onlyskin/``. Each mode is kept out of the
+    other two, including the frozen CelebA and LFW names.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
-    if mode == MASK_LABELS_FULL:
-        return
+    protected: set[Path] = set()
+    for other in (MASK_LABELS_FULL, MASK_LABELS_NOSKIN, MASK_LABELS_ONLYSKIN):
+        if other == mode:
+            continue
+        for name in frozen_slot_names(other):
+            protected.add((RESULTS_DIR / name).resolve())
+        other_flag = None if other == MASK_LABELS_FULL else other
+        protected.add(default_summary_dir(image, other_flag).resolve())
+    return protected
+
+
+def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) -> None:
+    """Keep each B2 mode out of the other modes' summary directories.
+
+    ``full`` may write ``results/b2_<T>/``. ``ablate_noskin`` must not
+    write ``results/b2_celeba_T0/``, ``results/b2_lfw_T0/``, or an
+    ``ablate_onlyskin`` slot. ``ablate_onlyskin`` must not write those
+    product directories or an ``ablate_noskin`` slot.
+
+    Raises:
+        SummarySlotError: ``directory`` is another mode's frozen slot.
+    """
+    mode, _mapping = resolve_mask_labels(mask_labels)
     resolved = directory.resolve()
-    protected = {(RESULTS_DIR / name).resolve() for name in PRODUCT_FULL_SLOTS}
-    protected.add(default_summary_dir(image, MASK_LABELS_FULL).resolve())
-    if resolved in protected:
-        raise SummarySlotError(
-            f"In-M ablation {mode} refuses {directory}. "
-            "That directory is the product makeup set "
-            "(DEFAULT_PARSING_LABELS). "
-            f"The ablation summary is results/b2_<T>_{mode}/ "
-            "(for example results/b2_celeba_T0_ablate_noskin/). "
-            "Ablation does not change the makeup definition."
-        )
+    if resolved not in foreign_summary_dirs(image, mode):
+        return
+    example = (
+        "results/b2_celeba_T0/"
+        if mode == MASK_LABELS_FULL
+        else f"results/b2_celeba_T0_{mode}/"
+    )
+    raise SummarySlotError(
+        f"In-M mode {mode} refuses {directory}. "
+        "That directory belongs to another B2 summary slot "
+        "(product full M, ablate_noskin, or ablate_onlyskin). "
+        f"This mode writes {example}. "
+        "Ablation does not change DEFAULT_PARSING_LABELS and does not "
+        "overwrite another slot."
+    )
 
 
 def output_name_for(path: Path) -> str:
@@ -1608,11 +1698,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "In-M ablation for this run. Default full (omit the flag) keeps "
             "DEFAULT_PARSING_LABELS: skin/cheek 1, brow 2/3, eye 4/5, lip 12/13. "
             "ablate_noskin drops label 1 and keeps {2, 3, 4, 5, 12, 13}. "
+            "ablate_onlyskin is the complement and keeps {1} only. "
             "default is an alias of full. "
-            "Does not add nose, hair, ears, or neck, and does not edit the "
-            "product default. ablate_noskin writes "
-            "results/b2_<T>_ablate_noskin/ and does not overwrite "
-            "results/b2_celeba_T0/. Does not launch."
+            "Does not add nose, hair, ears, or neck, and does not edit or "
+            "expand the product default. ablate_noskin writes "
+            "results/b2_<T>_ablate_noskin/. ablate_onlyskin writes "
+            "results/b2_<T>_ablate_onlyskin/. Neither overwrites "
+            "results/b2_celeba_T0/, results/b2_lfw_T0/, or the other "
+            "ablation slot. Does not launch."
         ),
     )
     parser.add_argument(
@@ -1670,8 +1763,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Directory for summary.json and summary.csv. "
             "Default: results/b2_<T>/ (results/b2_celeba_T0/ for the first still). "
             "ablate_noskin defaults to results/b2_<T>_ablate_noskin/ "
-            "(results/b2_celeba_T0_ablate_noskin/ for the first still) and "
-            "refuses the product full-M directory. "
+            "(results/b2_celeba_T0_ablate_noskin/ for the first still). "
+            "ablate_onlyskin defaults to results/b2_<T>_ablate_onlyskin/ "
+            "(results/b2_celeba_T0_ablate_onlyskin/ for the first still; "
+            "later results/b2_lfw_T0_ablate_onlyskin/). "
+            "Each mode refuses the other modes' slots. "
             "The flat results/ directory is refused."
         ),
     )
