@@ -1398,6 +1398,520 @@ class AblateOnlyskinTest(unittest.TestCase):
         self.assertIn("--ablate ablate_onlyskin", metrics["worker_command"])
 
 
+class AblateSoftskinTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        clear_hook_state()
+        os.environ.pop(HOOK_CONFIG_ENV, None)
+        os.environ.pop(b2.IMAGE_ENV, None)
+        os.environ.pop(b2.PARSING_ENV, None)
+
+    def test_switch_keeps_the_product_labels_and_the_dual_budget(self) -> None:
+        from makeup.mask import DEFAULT_PARSING_LABELS
+
+        before = dict(DEFAULT_PARSING_LABELS)
+        mode, mapping = b2.resolve_mask_labels("softskin")
+        self.assertEqual(mode, "softskin")
+        self.assertIsNone(mapping)
+        self.assertEqual(dict(DEFAULT_PARSING_LABELS), before)
+        self.assertEqual(set(DEFAULT_PARSING_LABELS), {1, 2, 3, 4, 5, 12, 13})
+        self.assertEqual(b2.parsing_label_ids("softskin"), [1, 2, 3, 4, 5, 12, 13])
+        self.assertEqual(b2.HARD_EPSILON, 0.1)
+        self.assertEqual(b2.SOFT_SKIN_EPSILON, 0.07)
+        self.assertEqual(b2.SKIN_EPSILON_SCALE, 0.7)
+        self.assertTrue(abs(b2.SOFT_SKIN_EPSILON - 0.7 * 0.1) < 1e-9)
+        fields = b2.mask_label_fields("softskin")
+        self.assertEqual(fields["label_map"], "DEFAULT_PARSING_LABELS")
+        self.assertEqual(fields["budget"], "dual")
+        self.assertEqual(fields["hard_parsing_label_ids"], [2, 3, 4, 5, 12, 13])
+        self.assertEqual(fields["soft_parsing_label_ids"], [1])
+        self.assertFalse(fields["ablation_changes_default_m"])
+        args = b2.parse_args(["--ablate", "softskin"])
+        self.assertEqual(args.ablate, "softskin")
+        self.assertFalse(args.launch)
+        self.assertFalse(args.arm_hook)
+        for rejected in ("ablate_softskin", "soft_skin", "effect_green"):
+            with self.assertRaises(b2.MaskLabelError):
+                b2.resolve_mask_labels(rejected)
+        mode, mapping = b2.resolve_mask_labels("ablate_noskin")
+        self.assertEqual(mode, "ablate_noskin")
+        self.assertEqual(set(mapping), {2, 3, 4, 5, 12, 13})
+        self.assertEqual(dict(DEFAULT_PARSING_LABELS), before)
+
+    def test_slots_are_only_the_two_softskin_directories(self) -> None:
+        celeba = Path(b2.DEFAULT_IMPERSONATION_IMAGE)
+        lfw = Path(b2.LFW_IMPERSONATION_IMAGE)
+        self.assertEqual(
+            b2.default_summary_dir(celeba, "softskin"),
+            b2.RESULTS_DIR / "b2_celeba_T0_softskin",
+        )
+        self.assertEqual(
+            b2.default_summary_dir(lfw, "softskin"),
+            b2.RESULTS_DIR / "b2_lfw_T0_softskin",
+        )
+        self.assertEqual(b2.summary_slot(celeba, "softskin"), "b2_celeba_T0_softskin")
+        self.assertEqual(b2.summary_slot(lfw, "softskin"), "b2_lfw_T0_softskin")
+        command = b2.user_command(celeba, Path(b2.DEFAULT_PARSING), "softskin")
+        self.assertIn("--ablate softskin --arm-hook --launch", command)
+        self.assertNotIn("--ablate ablate_softskin", command)
+        plan = b1.build_plan(b2.DEFAULT_IMPERSONATION_IMAGE, launch=True)
+        worker = b2.worker_command(
+            plan,
+            Path(b2.DEFAULT_PARSING),
+            Path("/tmp/b2-worker.json"),
+            b1.AEGIS_ROOT,
+            "softskin",
+        )
+        self.assertEqual(worker[worker.index("--ablate") + 1], "softskin")
+
+        product = b2.RESULTS_DIR / "b2_celeba_T0"
+        before_json = (product / "summary.json").read_bytes()
+        before_csv = (product / "summary.csv").read_bytes()
+        for slot in (
+            product,
+            b2.RESULTS_DIR / "b2_lfw_T0",
+            b2.RESULTS_DIR / "b2_celeba_T0_ablate_noskin",
+            b2.RESULTS_DIR / "b2_lfw_T0_ablate_noskin",
+            b2.RESULTS_DIR / "b2_celeba_T0_ablate_onlyskin",
+            b2.RESULTS_DIR / "b2_lfw_T0_ablate_onlyskin",
+            b2.RESULTS_DIR / "b2_celeba_T0_onlyskin",
+            b2.RESULTS_DIR / "b2_lfw_T0_softskin",
+        ):
+            code = b2.main(
+                ["--ablate", "softskin", "--summary-dir", str(slot)],
+                runner=_boom,
+            )
+            self.assertEqual(code, 2, slot)
+            self.assertFalse((slot / "summary.json").exists() and slot != product)
+        self.assertEqual((product / "summary.json").read_bytes(), before_json)
+        self.assertEqual((product / "summary.csv").read_bytes(), before_csv)
+        self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_softskin").exists())
+        code = b2.main(
+            ["--ablate", "ablate_noskin", "--summary-dir", str(b2.RESULTS_DIR / "b2_celeba_T0_softskin")],
+            runner=_boom,
+        )
+        self.assertEqual(code, 2)
+        self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_softskin").exists())
+
+    def test_dry_run_writes_only_the_softskin_slot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                code = b2.main(["--ablate", "softskin"], runner=_boom)
+                payload = json.loads(
+                    (root / "b2_celeba_T0_softskin" / "summary.json").read_text(encoding="utf-8")
+                )
+                csv_text = (root / "b2_celeba_T0_softskin" / "summary.csv").read_text(
+                    encoding="utf-8"
+                )
+                self.assertFalse((root / "b2_celeba_T0").exists())
+                self.assertFalse((root / "b2_celeba_T0_ablate_noskin").exists())
+                self.assertFalse((root / "b2_lfw_T0_softskin").exists())
+            self.assertEqual(code, 0)
+            self.assertFalse(payload["metrics"]["command_attempted"])
+            self.assertFalse(payload["pipeline_ok"])
+            self.assertEqual(payload["summary_slot"], "b2_celeba_T0_softskin")
+            self.assertEqual(payload["mask_labels"], "softskin")
+            self.assertEqual(payload["parsing_label_ids"], [1, 2, 3, 4, 5, 12, 13])
+            self.assertFalse(payload["ablation_changes_default_m"])
+            self.assertEqual(payload["metrics"]["budget"], "dual")
+            self.assertEqual(payload["metrics"]["hard_epsilon"], 0.1)
+            self.assertEqual(payload["metrics"]["soft_epsilon"], 0.07)
+            self.assertIsNone(payload["metrics"]["hard_abs_delta_mean"])
+            self.assertIsNone(payload["metrics"]["soft_abs_delta_p95"])
+            self.assertIsNone(payload["metrics"]["dc_mask_support_line"])
+            self.assertIn("--ablate softskin", payload["metrics"]["command"])
+            self.assertIn("--arm-hook --launch", payload["metrics"]["command"])
+            self.assertFalse(b2.parse_args(["--ablate", "softskin"]).launch)
+            self.assertIn("pending-get-xyz", payload["note"])
+            self.assertIn("ensure_dc_mask", payload["note"])
+            self.assertIn("mask (N,) nz=", payload["note"])
+            self.assertIn("2511.17747", payload["note"])
+            self.assertIn("2105.03162", payload["note"])
+            self.assertIn("B2-a", payload["note"])
+            self.assertIn("onlyskin", payload["note"])
+            self.assertIn("noskin", payload["note"])
+            self.assertIn("project_dual_budget_residual", payload["note"])
+            self.assertIn("MakeupPgdHook._project_numpy", payload["note"])
+            self.assertNotIn("effect-green", payload["note"])
+            self.assertNotIn("23.2", payload["note"])
+            self.assertIn("hard_abs_delta_mean", csv_text)
+            self.assertIn("soft_abs_delta_p95", csv_text)
+            self.assertIn("dc_mask_support_line", csv_text)
+
+    def test_dual_epsilon_on_pgd_projection(self) -> None:
+        from makeup.residual import project_residual
+
+        labels = _labels()
+        full = dc_hook_from_parsing(labels, 0.1, subject="306")
+        dual = dc_hook_from_parsing(
+            labels,
+            0.1,
+            subject="306",
+            soft_label_ids=(1,),
+            soft_epsilon=0.07,
+        )
+        full_u = np.asarray(full.mask.union())
+        dual_u = np.asarray(dual.mask.union())
+        self.assertTrue(np.array_equal(full_u > 0, dual_u > 0))
+        self.assertEqual(int(np.count_nonzero(dual_u > 0)), 7)
+        self.assertEqual(dual.budget, "dual")
+        self.assertEqual(dual.epsilon, 0.1)
+        self.assertEqual(dual.soft_epsilon, 0.07)
+        raw = np.full((10, 1, 3), 0.25)
+        projected = np.asarray(dual.project_like(raw))
+        uniform = np.asarray(full.project_like(raw))
+        self.assertTrue(np.allclose(uniform[:7], 0.1))
+        self.assertTrue(np.allclose(projected[:6], 0.1))
+        self.assertTrue(np.allclose(projected[6], 0.07))
+        self.assertTrue(np.all(projected[7:] == 0.0))
+        self.assertEqual(b2.outside_m_abs_delta(np.zeros_like(raw), projected, dual.mask), 0.0)
+        mid = np.asarray(dual.project_like(np.full((10, 1, 3), 0.08)))
+        self.assertTrue(np.allclose(mid[:6], 0.08))
+        self.assertTrue(np.allclose(mid[6], 0.07))
+        negative = np.asarray(dual.project_like(np.full((10, 1, 3), -0.25)))
+        self.assertTrue(np.allclose(negative[:6], -0.1))
+        self.assertTrue(np.allclose(negative[6], -0.07))
+        hard_mask = dual_u.copy()
+        hard_mask[6] = 0.0
+        hard_only = project_residual(np.full((10, 3), 0.25), hard_mask, 0.1, kind="dc")
+        self.assertTrue(np.allclose(projected[:6, 0], hard_only[:6]))
+        origin = np.zeros((1, 10, 1, 3))
+        edited = np.asarray(dual.reproject_foolbox(np.full_like(origin, 0.1), origin))
+        self.assertTrue(np.allclose(edited[0, :6, 0], 0.1))
+        self.assertTrue(np.allclose(edited[0, 6, 0], 0.07))
+        self.assertTrue(np.all(edited[0, 7:] == 0.0))
+        stepped = np.asarray(dual.foolbox_project(np.full_like(origin, 0.25), origin))
+        self.assertTrue(np.allclose(stepped[0, :6, 0], 0.1))
+        self.assertTrue(np.allclose(stepped[0, 6, 0], 0.07))
+        stats = b2.abs_delta_breakdown(np.zeros_like(raw), projected, dual.mask, dual.soft_mask)
+        self.assertEqual(stats["hard_abs_delta_count"], 6)
+        self.assertEqual(stats["soft_abs_delta_count"], 1)
+        self.assertAlmostEqual(stats["hard_abs_delta_mean"], 0.1)
+        self.assertAlmostEqual(stats["hard_abs_delta_p50"], 0.1)
+        self.assertAlmostEqual(stats["hard_abs_delta_p95"], 0.1)
+        self.assertAlmostEqual(stats["soft_abs_delta_mean"], 0.07)
+        self.assertAlmostEqual(stats["soft_abs_delta_p50"], 0.07)
+        self.assertAlmostEqual(stats["soft_abs_delta_p95"], 0.07)
+        self.assertAlmostEqual(stats["abs_delta_by_budget"]["soft"]["epsilon"], 0.07)
+        self.assertAlmostEqual(stats["abs_delta_by_budget"]["hard"]["max"], 0.1)
+        with self.assertRaises(ValueError):
+            dc_hook_from_parsing(
+                labels, 0.1, subject="306", soft_label_ids=(10,), soft_epsilon=0.07
+            )
+
+    def test_image_arm_stays_pending_and_lift_keeps_support(self) -> None:
+        import contextlib
+        import io
+
+        from makeup.aegis_mask import means_at_pixels
+        from makeup.aegis_pgd_hook import ensure_dc_mask, last_dc_mask_support
+
+        height, width = 8, 8
+        labels = np.zeros((height, width), dtype=np.int64)
+        labels[1, 2] = 12
+        labels[3, 3] = 1
+        labels[4, 4] = 10
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = root / "parsing" / "306.npy"
+            parsing.parent.mkdir(parents=True)
+            np.save(parsing, labels)
+            code = b2.main(
+                [
+                    "--arm-hook",
+                    "--ablate",
+                    "softskin",
+                    "--parsing",
+                    str(parsing),
+                    "--aegis-root",
+                    str(root / "no-aegis"),
+                    "--summary-dir",
+                    str(root / "out"),
+                ],
+                runner=_boom,
+            )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 0)
+        hook = payload["metrics"]["hook"]
+        self.assertEqual(hook["dc_mask_lift"], "pending-get-xyz")
+        self.assertEqual(hook["mask_shape"], [8, 8])
+        self.assertEqual(hook["budget"], "dual")
+        self.assertEqual(hook["epsilon"], 0.1)
+        self.assertEqual(hook["soft_epsilon"], 0.07)
+        self.assertEqual(hook["image_mask_nonzero"], 2)
+        self.assertAlmostEqual(hook["image_mask_fraction"], 2 / 64)
+        self.assertIsNone(payload["metrics"]["dc_mask_support_line"])
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertNotEqual(hook["dc_mask_lift"], "projected-means")
+
+        pending = dc_hook_from_parsing(
+            labels, 0.1, None, soft_label_ids=(1,), soft_epsilon=0.07
+        )
+        full = dc_hook_from_parsing(labels, 0.1, None)
+        self.assertTrue(
+            np.array_equal(np.asarray(pending.mask) > 0, np.asarray(full.mask) > 0)
+        )
+        with self.assertRaises(ValueError):
+            pending.project_like(np.full((3, 1, 3), 0.4))
+        lip, skin, nose = means_at_pixels(
+            [1, 3, 4], [2, 3, 4], height, width, radius=1.0, fovy_deg=20.0
+        )
+
+        class _Gaussians:
+            def __init__(self, xyz):
+                self.get_xyz = np.asarray(xyz, dtype=np.float64)
+
+        clear_hook_state()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            lifted = ensure_dc_mask(
+                pending, _Gaussians(np.vstack([lip, skin, nose]))
+            )
+        self.assertEqual(buffer.getvalue().strip().count("\n") + 1, 1)
+        self.assertEqual(lifted.dc_mask_lift, "projected-means")
+        support = last_dc_mask_support()
+        self.assertEqual(support["dc_mask_shape"], [3])
+        self.assertEqual(support["dc_mask_nonzero"], 2)
+        self.assertIn("mask (3,) nz=2", support["dc_mask_support_line"])
+        with contextlib.redirect_stdout(io.StringIO()):
+            full_lifted = ensure_dc_mask(full, _Gaussians(np.vstack([lip, skin, nose])))
+        self.assertTrue(
+            np.array_equal(
+                np.asarray(lifted.mask) > 0,
+                np.asarray(full_lifted.mask) > 0,
+            )
+        )
+        projected = np.asarray(lifted.project_like(np.full((3, 1, 3), 0.4)))
+        self.assertTrue(np.allclose(projected[0, 0], 0.1))
+        self.assertTrue(np.allclose(projected[1, 0], 0.07))
+        self.assertTrue(np.all(projected[2] == 0.0))
+
+    def test_arm_hook_writes_the_dual_budget_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            aegis = root / "AEGIS"
+            _excerpt_tree(aegis)
+            code = b2.main(
+                [
+                    "--arm-hook",
+                    "--ablate",
+                    "softskin",
+                    "--parsing",
+                    str(parsing),
+                    "--aegis-root",
+                    str(aegis),
+                    "--summary-dir",
+                    str(root / "out"),
+                ],
+                runner=_boom,
+            )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            config = json.loads((aegis / ".gs_makeup_hook.json").read_text(encoding="utf-8"))
+            weight = np.load(aegis / ".gs_makeup_mask.npy")
+            soft = np.load(aegis / ".gs_makeup_soft_mask.npy")
+            clear_hook_state()
+            from makeup.aegis_pgd_hook import load_hook_from_config
+
+            loaded = load_hook_from_config(aegis / ".gs_makeup_hook.json")
+            restored = np.asarray(loaded.project_like(np.full((10, 1, 3), 0.25)))
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "hook_armed")
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0_softskin")
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertEqual(config["epsilon"], 0.1)
+        self.assertEqual(config["soft_epsilon"], 0.07)
+        self.assertEqual(config["budget"], "dual")
+        self.assertEqual(float(weight[6]), 1.0)
+        self.assertEqual(float(soft[6]), 1.0)
+        self.assertEqual(float(soft[0]), 0.0)
+        self.assertEqual(int(np.count_nonzero(weight > 0)), 7)
+        self.assertEqual(int(np.count_nonzero(soft > 0)), 1)
+        self.assertIsNotNone(loaded)
+        self.assertTrue(np.allclose(restored[6], 0.07))
+        self.assertTrue(np.allclose(restored[0], 0.1))
+
+    def test_gate_requires_support_line_and_budget_breakdown(self) -> None:
+        metrics = {
+            "return_code": 0,
+            "mask_labels": "softskin",
+            "cos_adv_source": 0.2,
+            "cos_adv_target": 0.8,
+            "outside_m_abs_delta": 0.0,
+        }
+        self.assertFalse(b2.gate_holds(metrics))
+        metrics["dc_mask_support_line"] = "mask (3,) nz=2 frac=0.666667"
+        self.assertFalse(b2.gate_holds(metrics))
+        for key in b2.SOFTSKIN_REQUIRED_STATS:
+            metrics[key] = 0.05
+        self.assertTrue(b2.gate_holds(metrics))
+        leaked = dict(metrics)
+        leaked["outside_m_abs_delta"] = 0.02
+        self.assertFalse(b2.gate_holds(leaked))
+
+    def test_launch_summary_records_the_breakdown(self) -> None:
+        def runner(command, **kwargs):
+            out = Path(command[command.index("--summary-out") + 1])
+            out.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "cos_adv_source": 0.2,
+                        "cos_adv_target": 0.8,
+                        "outside_m_abs_delta": 0.0,
+                        "dc_mask_shape": [89021],
+                        "dc_mask_nonzero": 20650,
+                        "dc_mask_fraction": 20650 / 89021,
+                        "dc_mask_support_line": "mask (89021,) nz=20650 frac=0.23197",
+                        "hard_abs_delta_mean": 0.04,
+                        "hard_abs_delta_p50": 0.03,
+                        "hard_abs_delta_p95": 0.09,
+                        "hard_abs_delta_max": 0.1,
+                        "hard_abs_delta_count": 4000,
+                        "soft_abs_delta_mean": 0.02,
+                        "soft_abs_delta_p50": 0.015,
+                        "soft_abs_delta_p95": 0.06,
+                        "soft_abs_delta_max": 0.07,
+                        "soft_abs_delta_count": 16650,
+                        "abs_delta_by_budget": {
+                            "hard": {"mean": 0.04, "p50": 0.03, "p95": 0.09, "epsilon": 0.1},
+                            "soft": {"mean": 0.02, "p50": 0.015, "p95": 0.06, "epsilon": 0.07},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class Proc:
+                returncode = 0
+                stdout = "mask (89021,) nz=20650 frac=0.23197\n"
+                stderr = ""
+
+            return Proc()
+
+        def fake_install(hook, aegis_root):
+            config = Path(aegis_root) / ".gs_makeup_hook.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                json.dumps(
+                    {
+                        "kind": "dc",
+                        "subject": "306",
+                        "epsilon": 0.1,
+                        "soft_epsilon": 0.07,
+                        "budget": "dual",
+                        "dc_mask_lift": "pending-get-xyz",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {"status": "patched", "armed": True, "config": str(config), "note": "test"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            image = root / "celeba_T0.jpg"
+            image.write_bytes(b"still")
+            with (
+                patch.object(b2, "install_b2_hook", side_effect=fake_install),
+                patch.object(b2, "collect_b2_blockers", return_value=[]),
+            ):
+                code = b2.main(
+                    [
+                        "--arm-hook",
+                        "--launch",
+                        "--ablate",
+                        "softskin",
+                        "--impersonation-image",
+                        str(image),
+                        "--parsing",
+                        str(parsing),
+                        "--aegis-root",
+                        str(root / "AEGIS"),
+                        "--summary-dir",
+                        str(root / "out"),
+                    ],
+                    runner=runner,
+                )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            csv_text = (root / "out" / "summary.csv").read_text(encoding="utf-8")
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["pipeline_ok"])
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0_softskin")
+        metrics = payload["metrics"]
+        self.assertEqual(metrics["dc_mask_support_line"], "mask (89021,) nz=20650 frac=0.23197")
+        self.assertEqual(metrics["hook"]["dc_mask_lift"], "projected-means")
+        self.assertAlmostEqual(metrics["hard_abs_delta_p95"], 0.09)
+        self.assertAlmostEqual(metrics["soft_abs_delta_max"], 0.07)
+        self.assertEqual(metrics["abs_delta_by_budget"]["soft"]["epsilon"], 0.07)
+        self.assertIn("0.09", csv_text)
+        self.assertIn("0.06", csv_text)
+        self.assertNotIn("effect-green", payload["note"])
+
+    def test_launch_without_breakdown_stays_unscored(self) -> None:
+        def runner(command, **kwargs):
+            out = Path(command[command.index("--summary-out") + 1])
+            out.write_text(
+                json.dumps(
+                    {
+                        "cos_adv_source": 0.2,
+                        "cos_adv_target": 0.8,
+                        "outside_m_abs_delta": 0.0,
+                        "dc_mask_support_line": "mask (8,) nz=2 frac=0.25",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class Proc:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return Proc()
+
+        def fake_install(hook, aegis_root):
+            config = Path(aegis_root) / ".gs_makeup_hook.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                json.dumps({"kind": "dc", "subject": "306", "epsilon": 0.1}),
+                encoding="utf-8",
+            )
+            return {"status": "patched", "armed": True, "config": str(config), "note": "test"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            image = root / "celeba_T0.jpg"
+            image.write_bytes(b"still")
+            with (
+                patch.object(b2, "install_b2_hook", side_effect=fake_install),
+                patch.object(b2, "collect_b2_blockers", return_value=[]),
+            ):
+                code = b2.main(
+                    [
+                        "--arm-hook",
+                        "--launch",
+                        "--ablate",
+                        "softskin",
+                        "--impersonation-image",
+                        str(image),
+                        "--parsing",
+                        str(parsing),
+                        "--aegis-root",
+                        str(root / "AEGIS"),
+                        "--summary-dir",
+                        str(root / "out"),
+                    ],
+                    runner=runner,
+                )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["status"], "scoring_failed")
+        self.assertFalse(payload["pipeline_ok"])
+        self.assertIsNone(payload["metrics"]["hard_abs_delta_mean"])
+
+
 class DocsTest(unittest.TestCase):
     def test_readme_documents_b2_cli_without_default_launch(self) -> None:
         text = (_REPO / "README.md").read_text(encoding="utf-8")
@@ -1418,6 +1932,19 @@ class DocsTest(unittest.TestCase):
         self.assertIn("results/b2_lfw_T0_ablate_onlyskin/", section)
         self.assertIn("--ablate ablate_noskin", section)
         self.assertIn("--ablate ablate_onlyskin", section)
+        self.assertIn("results/b2_celeba_T0_softskin/", section)
+        self.assertIn("results/b2_lfw_T0_softskin/", section)
+        self.assertIn("--ablate softskin", section)
+        self.assertIn("0.07", section)
+        self.assertIn("2511.17747", section)
+        self.assertIn("2105.03162", section)
+        self.assertIn("B2-a", section)
+        self.assertIn("project_dual_budget_residual", section)
+        self.assertIn("MakeupPgdHook._project_numpy", section)
+        self.assertIn("dc_mask_support_line", section)
+        self.assertIn("hard_abs_delta", section)
+        self.assertNotIn("effect-green", section)
+        self.assertNotIn("four thresholds", section)
         self.assertIn("DEFAULT_PARSING_LABELS", section)
         self.assertIn("0.7888%", section)
         self.assertIn("9.43%", section)
@@ -1470,6 +1997,18 @@ class DocsTest(unittest.TestCase):
         self.assertIn("results/b2_lfw_T0_ablate_onlyskin/", text)
         self.assertIn("--ablate ablate_noskin", text)
         self.assertIn("--ablate ablate_onlyskin", text)
+        self.assertIn("results/b2_celeba_T0_softskin/", text)
+        self.assertIn("results/b2_lfw_T0_softskin/", text)
+        self.assertIn("--ablate softskin", text)
+        self.assertIn("0.07", text)
+        self.assertIn("2511.17747", text)
+        self.assertIn("2105.03162", text)
+        self.assertIn("B2-a", text)
+        self.assertIn("project_dual_budget_residual", text)
+        self.assertIn("dc_mask_support_line", text)
+        self.assertIn("hard_abs_delta_mean", text)
+        self.assertNotIn("effect-green", text)
+        self.assertNotIn("four thresholds", text)
         self.assertIn("DEFAULT_PARSING_LABELS", text)
         self.assertIn("0.7888%", text)
         self.assertIn("9.43%", text)

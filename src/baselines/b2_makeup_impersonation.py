@@ -26,8 +26,12 @@ default ``full`` mode keeps ``DEFAULT_PARSING_LABELS`` and writes
 ``results/b2_<T>/``. ``ablate_noskin`` drops parser label 1 only and
 writes ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` is the
 complement: label 1 only, written to ``results/b2_<T>_ablate_onlyskin/``.
-Neither ablation adds nose, hair, ears, or neck, and neither edits the
-product default or overwrites the other slot.
+``softskin`` keeps the full label set and the same support. Hard makeup
+labels ``{2, 3, 4, 5, 12, 13}`` stay on ``project_residual`` at ε=0.1.
+Skin label ``1`` uses ε=0.07 (AEGIS region-adaptive 0.7×). It writes
+only ``results/b2_<T>_softskin/``. None of these modes add nose, hair,
+ears, or neck, and none edit the product default or overwrite another
+slot. The default CLI does not pass ``--launch``.
 """
 
 from __future__ import annotations
@@ -116,24 +120,67 @@ MASK_LABELS_NOSKIN = "ablate_noskin"
 # Complementary knife: keep skin/cheek label 1 only. Suffix is
 # ``results/b2_<T>_ablate_onlyskin/``. It does not replace noskin.
 MASK_LABELS_ONLYSKIN = "ablate_onlyskin"
+# Same support as ``full``. Skin label 1 uses a tighter L∞ ball.
+# The summary suffix is ``softskin`` (``results/b2_<T>_softskin/``).
+MASK_LABELS_SOFTSKIN = "softskin"
 
 _MASK_LABEL_ALIASES = {
     "full": MASK_LABELS_FULL,
     "default": MASK_LABELS_FULL,
     MASK_LABELS_NOSKIN: MASK_LABELS_NOSKIN,
     MASK_LABELS_ONLYSKIN: MASK_LABELS_ONLYSKIN,
+    MASK_LABELS_SOFTSKIN: MASK_LABELS_SOFTSKIN,
 }
 MASK_LABEL_CHOICES = tuple(sorted(_MASK_LABEL_ALIASES))
 
 # Frozen product directories. An ablation must not write these.
 PRODUCT_FULL_SLOTS = frozenset({"b2_celeba_T0", "b2_lfw_T0"})
 _FROZEN_STILL_STEMS = ("celeba_T0", "lfw_T0")
+_SLOT_MODES = (
+    MASK_LABELS_FULL,
+    MASK_LABELS_NOSKIN,
+    MASK_LABELS_ONLYSKIN,
+    MASK_LABELS_SOFTSKIN,
+)
 
 # ``ablate_noskin`` keeps these BiSeNet ids and no others. Cheek is only id 1.
 # ``ablate_onlyskin`` keeps that cheek id and drops exactly the noskin set.
+# ``softskin`` uses the same ids as a dual budget: hard makeup at ε=0.1,
+# skin at ε=0.07, support unchanged.
 _NOSKIN_LABEL_IDS = frozenset({2, 3, 4, 5, 12, 13})
 _ONLYSKIN_LABEL_IDS = frozenset({1})
 _PRODUCT_LABEL_IDS = _NOSKIN_LABEL_IDS | _ONLYSKIN_LABEL_IDS
+_HARD_MAKEUP_LABEL_IDS = _NOSKIN_LABEL_IDS
+_SOFT_SKIN_LABEL_IDS = _ONLYSKIN_LABEL_IDS
+# AEGIS region-adaptive ε uses 0.7× on skin (arXiv 2511.17747).
+# The frozen ball is the literal 0.07, that factor times B2's 0.1.
+SKIN_EPSILON_SCALE = 0.7
+SOFT_SKIN_EPSILON = 0.07
+HARD_EPSILON = b1.EPSILON
+
+# Flat summary keys for the hard vs soft |δ| breakdown.
+BUDGET_STAT_FIELDS = (
+    "hard_abs_delta_mean",
+    "hard_abs_delta_p50",
+    "hard_abs_delta_p95",
+    "hard_abs_delta_max",
+    "hard_abs_delta_count",
+    "soft_abs_delta_mean",
+    "soft_abs_delta_p50",
+    "soft_abs_delta_p95",
+    "soft_abs_delta_max",
+    "soft_abs_delta_count",
+    "abs_delta_by_budget",
+)
+# Scoring requires these aggregates plus ``dc_mask_support_line``.
+SOFTSKIN_REQUIRED_STATS = (
+    "hard_abs_delta_mean",
+    "hard_abs_delta_p50",
+    "hard_abs_delta_p95",
+    "soft_abs_delta_mean",
+    "soft_abs_delta_p50",
+    "soft_abs_delta_p95",
+)
 
 # Arm time on the bound 306 ply is not a Gaussian mask. ``--arm-hook``
 # records ``dc_mask_lift=pending-get-xyz`` and an ``(H, W)`` mask
@@ -160,10 +207,18 @@ def resolve_mask_labels(name: str | None):
     ``results/b2_<T>_ablate_noskin/`` and
     ``results/b2_<T>_ablate_onlyskin/``.
 
+    ``softskin`` returns ``("softskin", None)``. The hook still calls
+    ``from_parsing`` without a map, so the support stays
+    ``DEFAULT_PARSING_LABELS``. The difference is the dual L∞ ball:
+    hard makeup ``{2, 3, 4, 5, 12, 13}`` at ε=0.1, skin label 1 at
+    ε=0.07. The summary directory is ``results/b2_<T>_softskin/``.
+
     Raises:
         MaskLabelError: the name is unknown, ``ablate_noskin`` would
-            no longer be exactly ``{2, 3, 4, 5, 12, 13}``, or
-            ``ablate_onlyskin`` would no longer be exactly ``{1}``.
+            no longer be exactly ``{2, 3, 4, 5, 12, 13}``,
+            ``ablate_onlyskin`` would no longer be exactly ``{1}``, or
+            ``softskin`` would no longer be the product label set with
+            skin id 1 inside it.
     """
     if name is None or str(name).strip() == "":
         return MASK_LABELS_FULL, None
@@ -179,6 +234,21 @@ def resolve_mask_labels(name: str | None):
     canonical = _MASK_LABEL_ALIASES[key]
     if canonical == MASK_LABELS_FULL:
         return MASK_LABELS_FULL, None
+    if canonical == MASK_LABELS_SOFTSKIN:
+        from makeup.mask import DEFAULT_PARSING_LABELS
+
+        present = {int(label_id) for label_id in DEFAULT_PARSING_LABELS}
+        if present != _HARD_MAKEUP_LABEL_IDS | _SOFT_SKIN_LABEL_IDS:
+            raise MaskLabelError(
+                "softskin must keep DEFAULT_PARSING_LABELS "
+                f"{{1, 2, 3, 4, 5, 12, 13}}, got {sorted(present)}."
+            )
+        if SOFT_SKIN_EPSILON != 0.07 or HARD_EPSILON != 0.1:
+            raise MaskLabelError(
+                "softskin budgets are frozen at ε=0.1 (hard makeup) and "
+                f"ε_skin=0.07, got hard={HARD_EPSILON} soft={SOFT_SKIN_EPSILON}."
+            )
+        return MASK_LABELS_SOFTSKIN, None
     from makeup.mask import DEFAULT_PARSING_LABELS, MakeupRegion
 
     if set(int(label_id) for label_id in DEFAULT_PARSING_LABELS) != _PRODUCT_LABEL_IDS:
@@ -241,15 +311,25 @@ def mask_label_fields(mask_labels: str | None = None, requested: str | None = No
     """Summary fields for the label set. The default constant is not a copy."""
     mode, _mapping = resolve_mask_labels(mask_labels)
     asked = mode if requested is None else str(requested)
-    return {
+    fields = {
         "mask_labels": mode,
         "mask_labels_requested": asked,
         "parsing_label_ids": parsing_label_ids(mode),
         "label_map": (
-            "DEFAULT_PARSING_LABELS" if mode == MASK_LABELS_FULL else f"ablation:{mode}"
+            "DEFAULT_PARSING_LABELS"
+            if mode in (MASK_LABELS_FULL, MASK_LABELS_SOFTSKIN)
+            else f"ablation:{mode}"
         ),
         "ablation_changes_default_m": False,
+        "budget": "dual" if mode == MASK_LABELS_SOFTSKIN else "uniform",
+        "hard_epsilon": HARD_EPSILON,
+        "soft_epsilon": SOFT_SKIN_EPSILON if mode == MASK_LABELS_SOFTSKIN else None,
     }
+    if mode == MASK_LABELS_SOFTSKIN:
+        fields["hard_parsing_label_ids"] = sorted(_HARD_MAKEUP_LABEL_IDS)
+        fields["soft_parsing_label_ids"] = sorted(_SOFT_SKIN_LABEL_IDS)
+        fields["epsilon_skin_scale"] = SKIN_EPSILON_SCALE
+    return fields
 
 
 _ABLATION_LIFT_NOTE = (
@@ -266,6 +346,31 @@ def _ablation_note(mask_labels: str) -> str:
     """Empty for the product set, so the default summary note stays put."""
     if mask_labels == MASK_LABELS_FULL:
         return ""
+    if mask_labels == MASK_LABELS_SOFTSKIN:
+        return (
+            " softskin keeps DEFAULT_PARSING_LABELS "
+            "{1, 2, 3, 4, 5, 12, 13}. Support width is unchanged. "
+            "Hard makeup labels {2, 3, 4, 5, 12, 13} use project_residual "
+            "at ε=0.1. Skin label 1 uses the same support and a tighter "
+            "L∞ ball ε_skin=0.07 (0.7×0.1), the AEGIS region-adaptive skin "
+            "factor (https://arxiv.org/html/2511.17747). Adv-Makeup is the "
+            "makeup-local carrier (https://arxiv.org/abs/2105.03162). "
+            "The dual budget is project_dual_budget_residual inside "
+            "MakeupPgdHook._project_numpy. That method is the "
+            "project_residual step on both AEGIS paths: "
+            "adaptive_linf_pgd_attack via project_configured_delta, and "
+            "AEGIS._run_foolbox_attack via bind_foolbox_attack / "
+            "reproject_foolbox. B2's live attack is the Foolbox linfpgd path. "
+            "Nose, hair, ears, and neck stay outside M. "
+            "--arm-hook keeps dc_mask_lift=pending-get-xyz and the (H, W) mask. "
+            "ensure_dc_mask runs sample_image_mask when get_xyz is available; "
+            "that step logs mask (N,) nz=… frac=… and sets "
+            "dc_mask_lift=projected-means. "
+            "The softskin gate is a relative compare to B2-a, onlyskin, and "
+            "noskin. Scoring records pipeline_ok, outside-M |δ|=0, "
+            "dc_mask_support_line, and the hard vs soft |δ| breakdown "
+            "(mean, p50, p95)."
+        )
     if mask_labels == MASK_LABELS_NOSKIN:
         head = (
             " In-M ablation "
@@ -354,8 +459,9 @@ def summary_slot(path: Path, mask_labels: str | None = None) -> str:
     """``b2_<T>`` for the product set.
 
     ``ablate_noskin`` is ``b2_<T>_ablate_noskin``. ``ablate_onlyskin`` is
-    ``b2_<T>_ablate_onlyskin``. The mode name is already the suffix, so it
-    is not prefixed with a second ``ablate_``.
+    ``b2_<T>_ablate_onlyskin``. ``softskin`` is ``b2_<T>_softskin``.
+    The mode name is already the suffix, so it is not prefixed with a
+    second ``ablate_``.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
     slot = f"b2_{summary_stem(path)}"
@@ -435,12 +541,13 @@ def foreign_summary_dirs(image: Path, mask_labels: str | None) -> set[Path]:
 
     ``full`` owns ``results/b2_<T>/``. ``ablate_noskin`` owns
     ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` owns
-    ``results/b2_<T>_ablate_onlyskin/``. Each mode is kept out of the
-    other two, including the frozen CelebA and LFW names.
+    ``results/b2_<T>_ablate_onlyskin/``. ``softskin`` owns
+    ``results/b2_<T>_softskin/``. Each mode is kept out of the others,
+    including the frozen CelebA and LFW names.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
     protected: set[Path] = set()
-    for other in (MASK_LABELS_FULL, MASK_LABELS_NOSKIN, MASK_LABELS_ONLYSKIN):
+    for other in _SLOT_MODES:
         if other == mode:
             continue
         for name in frozen_slot_names(other):
@@ -450,19 +557,43 @@ def foreign_summary_dirs(image: Path, mask_labels: str | None) -> set[Path]:
     return protected
 
 
+def _under_results(directory: Path) -> bool:
+    try:
+        directory.resolve().relative_to(RESULTS_DIR.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) -> None:
     """Keep each B2 mode out of the other modes' summary directories.
 
-    ``full`` may write ``results/b2_<T>/``. ``ablate_noskin`` must not
-    write ``results/b2_celeba_T0/``, ``results/b2_lfw_T0/``, or an
-    ``ablate_onlyskin`` slot. ``ablate_onlyskin`` must not write those
-    product directories or an ``ablate_noskin`` slot.
+    ``full`` may write ``results/b2_<T>/``. ``ablate_noskin`` and
+    ``ablate_onlyskin`` must not write the product directories or each
+    other's slots. ``softskin`` writes only
+    ``results/b2_celeba_T0_softskin/`` or ``results/b2_lfw_T0_softskin/``
+    for that still. It refuses product directories and the other
+    ablation slots.
 
     Raises:
-        SummarySlotError: ``directory`` is another mode's frozen slot.
+        SummarySlotError: ``directory`` is another mode's slot, or a
+            ``softskin`` path under ``results/`` that is not its slot.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
     resolved = directory.resolve()
+    if mode == MASK_LABELS_SOFTSKIN:
+        expected = default_summary_dir(image, mode).resolve()
+        if resolved == expected:
+            return
+        if resolved in foreign_summary_dirs(image, mode) or _under_results(resolved):
+            raise SummarySlotError(
+                f"softskin refuses {directory}. "
+                "It writes only results/b2_celeba_T0_softskin/ and "
+                "results/b2_lfw_T0_softskin/ for that still. "
+                "Product B2 directories and other ablation slots stay put. "
+                "softskin does not change DEFAULT_PARSING_LABELS."
+            )
+        return
     if resolved not in foreign_summary_dirs(image, mode):
         return
     example = (
@@ -473,7 +604,7 @@ def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) 
     raise SummarySlotError(
         f"In-M mode {mode} refuses {directory}. "
         "That directory belongs to another B2 summary slot "
-        "(product full M, ablate_noskin, or ablate_onlyskin). "
+        "(product full M, ablate_noskin, ablate_onlyskin, or softskin). "
         f"This mode writes {example}. "
         "Ablation does not change DEFAULT_PARSING_LABELS and does not "
         "overwrite another slot."
@@ -609,10 +740,94 @@ def outside_m_abs_delta(clean, adv, mask) -> float:
     return float(outside_support_max_abs(delta, mask, "dc"))
 
 
+def _weight_vector(mask, count: int):
+    """``(N,)`` makeup weights. ``(N, 1)`` is squeezed."""
+    from makeup._numpy import require_numpy
+    from makeup.mask import as_mask_array
+
+    np = require_numpy()
+    weight = np.asarray(as_mask_array(mask), dtype=float)
+    if weight.ndim == 2 and weight.shape[1] == 1:
+        weight = weight[:, 0]
+    if weight.shape != (count,):
+        raise ValueError(
+            f"makeup weight shape {tuple(weight.shape)} does not match {(count,)}"
+        )
+    return weight
+
+
+def _abs_delta_aggregate(delta, selected) -> dict:
+    """mean / p50 / p95 / max of ``|δ|`` on the selected Gaussians."""
+    from makeup._numpy import require_numpy
+
+    np = require_numpy()
+    chosen = np.abs(np.asarray(delta, dtype=float)[selected])
+    count = int(np.count_nonzero(selected))
+    if chosen.size == 0:
+        return {"mean": None, "p50": None, "p95": None, "max": None, "count": 0}
+    return {
+        "mean": float(np.mean(chosen)),
+        "p50": float(np.percentile(chosen, 50)),
+        "p95": float(np.percentile(chosen, 95)),
+        "max": float(np.max(chosen)),
+        "count": count,
+    }
+
+
+def abs_delta_breakdown(clean, adv, support_mask, soft_mask) -> dict:
+    """Hard vs soft ``|δ|`` aggregates for one dual-budget residual.
+
+    Hard sites are inside the support and outside the soft mask. Soft
+    sites are the soft mask. Overlap counts as soft. Outside ``M`` is
+    neither. Each aggregate is mean, p50, and p95 of the absolute
+    residual entries, plus max and the Gaussian count.
+
+    Raises:
+        ValueError: a side is not a DC layout, or a mask is not ``(N,)``.
+    """
+    origin = _dc_colors(_as_float_array(clean))
+    updated = _dc_colors(_as_float_array(adv))
+    if origin.shape != updated.shape:
+        raise ValueError(
+            f"clean and adversarial DC shapes differ: {origin.shape} vs {updated.shape}"
+        )
+    delta = updated - origin
+    support = _weight_vector(support_mask, int(delta.shape[0]))
+    soft = _weight_vector(soft_mask, int(delta.shape[0]))
+    soft_on = soft > 0
+    hard_on = (support > 0) & ~soft_on
+    hard_stats = _abs_delta_aggregate(delta, hard_on)
+    soft_stats = _abs_delta_aggregate(delta, soft_on)
+    flat = {}
+    for prefix, stats in (("hard", hard_stats), ("soft", soft_stats)):
+        for name, value in stats.items():
+            flat[f"{prefix}_abs_delta_{name}"] = value
+    flat["abs_delta_by_budget"] = {
+        "hard": {**hard_stats, "epsilon": HARD_EPSILON},
+        "soft": {**soft_stats, "epsilon": SOFT_SKIN_EPSILON},
+    }
+    return flat
+
+
+def softskin_scores_ready(metrics: dict) -> bool:
+    """True unless this run is ``softskin`` and a scoring field is missing.
+
+    Softskin scoring needs ``dc_mask_support_line`` and the hard vs soft
+    ``|δ|`` mean / p50 / p95. Other modes do not use this check.
+    """
+    if str(metrics.get("mask_labels") or "") != MASK_LABELS_SOFTSKIN:
+        return True
+    if not metrics.get("dc_mask_support_line"):
+        return False
+    return all(metrics.get(key) is not None for key in SOFTSKIN_REQUIRED_STATS)
+
+
 def gate_holds(metrics: dict) -> bool:
     """True when pipeline, both cosines, and outside-M ``|δ| = 0`` are present.
 
-    A missing measurement stays a failure. This does not invent a number.
+    ``softskin`` also needs ``dc_mask_support_line`` and the hard vs soft
+    ``|δ|`` breakdown. A missing measurement stays a failure. This does
+    not invent a number and does not compare the run with B1.
     """
     if metrics.get("return_code") != 0:
         return False
@@ -620,6 +835,8 @@ def gate_holds(metrics: dict) -> bool:
         return False
     outside = metrics.get("outside_m_abs_delta")
     if outside is None:
+        return False
+    if not softskin_scores_ready(metrics):
         return False
     return float(outside) <= OUTSIDE_GATE
 
@@ -661,12 +878,17 @@ def hook_config_path(aegis_root: Path) -> Path:
     return Path(aegis_root) / CONFIG_NAME
 
 
-def build_dc_hook(parsing: Path, aegis_root: Path, label_map=None):
+def build_dc_hook(parsing: Path, aegis_root: Path, label_map=None, *, budget: str = "uniform"):
     """Build the #15 DC hook from a real ``306.npy``. No documented fallback.
 
     ``label_map=None`` keeps ``DEFAULT_PARSING_LABELS``. An in-M ablation
     passes the subset from ``resolve_mask_labels`` and does not edit that
     constant.
+
+    ``budget="dual"`` is B2 ``softskin``. The support label map is
+    unchanged. ``dc_hook_from_parsing`` stores skin label 1 as the soft
+    mask at ε=0.07 and leaves hard makeup on ε=0.1. Projection happens
+    in ``MakeupPgdHook._project_numpy`` via ``project_dual_budget_residual``.
 
     Returns:
         ``(hook, means_source)``. ``means_source`` is ``ply-xyz``,
@@ -674,23 +896,33 @@ def build_dc_hook(parsing: Path, aegis_root: Path, label_map=None):
 
     Raises:
         FileNotFoundError: the npy is not on disk.
-        ValueError: the array is not a parsing map the DC hook can arm.
+        ValueError: the array is not a parsing map the DC hook can arm,
+            or ``budget`` is not ``uniform`` or ``dual``.
         ImportError: NumPy is not installed.
     """
     from makeup.aegis_mask import load_b0a_dc_means, load_parsing_npy
     from makeup.aegis_pgd_hook import dc_hook_from_parsing
 
+    if budget not in {"uniform", "dual"}:
+        raise ValueError(f"budget must be 'uniform' or 'dual', got {budget!r}")
     labels = load_parsing_npy(parsing)
     means = None
     means_source = "per-gaussian-labels"
     if getattr(labels, "ndim", 0) == 2:
         means, means_source = load_b0a_dc_means(aegis_root, b1.SUBJECT)
+    soft_label_ids = None
+    soft_epsilon = None
+    if budget == "dual":
+        soft_label_ids = tuple(sorted(_SOFT_SKIN_LABEL_IDS))
+        soft_epsilon = SOFT_SKIN_EPSILON
     hook = dc_hook_from_parsing(
         labels,
-        b1.EPSILON,
+        HARD_EPSILON,
         means,
         subject=b1.SUBJECT,
         label_map=label_map,
+        soft_label_ids=soft_label_ids,
+        soft_epsilon=soft_epsilon,
     )
     if hook.kind != "dc":
         raise ValueError(f"B2 makeup hook kind must be dc, got {hook.kind}")
@@ -730,6 +962,9 @@ def describe_hook(hook, means_source: str, attach: dict) -> dict:
         "attach_status": attach.get("status"),
         "config": attach.get("config"),
         "layout": layout,
+        "budget": hook.budget,
+        "hard_epsilon": hook.epsilon,
+        "soft_epsilon": hook.soft_epsilon,
     }
     total = int(weight.size)
     nonzero = int(np.count_nonzero(weight > 0)) if total else 0
@@ -975,6 +1210,23 @@ def _empty_metrics(
         "cos_adv_target": None,
         "outside_m_abs_delta": None,
         "outside_m_abs_delta_gate": 0,
+        "budget": labels.get("budget", "uniform"),
+        "hard_epsilon": labels.get("hard_epsilon", HARD_EPSILON),
+        "soft_epsilon": labels.get("soft_epsilon"),
+        "hard_parsing_label_ids": labels.get("hard_parsing_label_ids"),
+        "soft_parsing_label_ids": labels.get("soft_parsing_label_ids"),
+        "epsilon_skin_scale": labels.get("epsilon_skin_scale"),
+        "hard_abs_delta_mean": None,
+        "hard_abs_delta_p50": None,
+        "hard_abs_delta_p95": None,
+        "hard_abs_delta_max": None,
+        "hard_abs_delta_count": None,
+        "soft_abs_delta_mean": None,
+        "soft_abs_delta_p50": None,
+        "soft_abs_delta_p95": None,
+        "soft_abs_delta_max": None,
+        "soft_abs_delta_count": None,
+        "abs_delta_by_budget": None,
         "dc_mask_shape": None,
         "dc_mask_nonzero": None,
         "dc_mask_fraction": None,
@@ -1018,6 +1270,13 @@ def _payload(plan, parsing, summary_dir, *, status, note, metrics, pipeline_ok=F
     }
 
 
+def _csv_stat(metrics: dict, key: str):
+    value = metrics.get(key)
+    if value is None:
+        return ""
+    return value
+
+
 def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
     """Write ``summary.json`` and ``summary.csv`` inside ``summary_dir`` only."""
     assert_summary_slot(summary_dir)
@@ -1050,6 +1309,15 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "cos_adv_target",
                 "outside_m_abs_delta",
                 "dc_mask_support_line",
+                "budget",
+                "hard_epsilon",
+                "soft_epsilon",
+                "hard_abs_delta_mean",
+                "hard_abs_delta_p50",
+                "hard_abs_delta_p95",
+                "soft_abs_delta_mean",
+                "soft_abs_delta_p50",
+                "soft_abs_delta_p95",
                 "gpu",
                 "makeup_hook_armed",
                 "hook_kind",
@@ -1073,6 +1341,15 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "cos_adv_target": "" if cos_target is None else cos_target,
                 "outside_m_abs_delta": "" if outside is None else outside,
                 "dc_mask_support_line": metrics.get("dc_mask_support_line") or "",
+                "budget": metrics.get("budget") or "",
+                "hard_epsilon": "" if metrics.get("hard_epsilon") is None else metrics.get("hard_epsilon"),
+                "soft_epsilon": "" if metrics.get("soft_epsilon") is None else metrics.get("soft_epsilon"),
+                "hard_abs_delta_mean": _csv_stat(metrics, "hard_abs_delta_mean"),
+                "hard_abs_delta_p50": _csv_stat(metrics, "hard_abs_delta_p50"),
+                "hard_abs_delta_p95": _csv_stat(metrics, "hard_abs_delta_p95"),
+                "soft_abs_delta_mean": _csv_stat(metrics, "soft_abs_delta_mean"),
+                "soft_abs_delta_p50": _csv_stat(metrics, "soft_abs_delta_p50"),
+                "soft_abs_delta_p95": _csv_stat(metrics, "soft_abs_delta_p95"),
                 "gpu": metrics.get("gpu") or "",
                 "makeup_hook_armed": str(bool(metrics.get("makeup_hook_armed"))).lower(),
                 "hook_kind": hook.get("kind") or "",
@@ -1289,8 +1566,11 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
             )
         mode = str(metrics.get("mask_labels") or MASK_LABELS_FULL)
         _mode, label_map = resolve_mask_labels(mode)
+        budget = "dual" if mode == MASK_LABELS_SOFTSKIN else "uniform"
         try:
-            hook, means_source = build_dc_hook(parsing, aegis_root, label_map)
+            hook, means_source = build_dc_hook(
+                parsing, aegis_root, label_map, budget=budget
+            )
             attach = install_b2_hook(hook, aegis_root)
         except (ValueError, OSError, ImportError) as exc:
             note = f"B2 could not build the kind=dc hook: {exc}"
@@ -1433,6 +1713,7 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
         "dc_mask_nonzero",
         "dc_mask_fraction",
         "dc_mask_support_line",
+        *BUDGET_STAT_FIELDS,
     ):
         if key in worker_payload and worker_payload[key] is not None:
             metrics[key] = worker_payload[key]
@@ -1454,6 +1735,9 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
 
     return_code = metrics["return_code"]
     outside = metrics.get("outside_m_abs_delta")
+    cosines_present = (
+        metrics["cos_adv_source"] is not None and metrics["cos_adv_target"] is not None
+    )
     if gate_holds(metrics):
         status = "pipeline_ok"
         pipeline_ok = True
@@ -1463,18 +1747,39 @@ def _execute_plan(args, plan, parsing, summary_dir, aegis_root, metrics, *, runn
             f"cos(adv, T)={metrics['cos_adv_target']:.4f}, "
             f"outside-M |delta|={float(outside):.6g}."
         )
+        if str(metrics.get("mask_labels") or "") == MASK_LABELS_SOFTSKIN:
+            note += (
+                " softskin scoring also has dc_mask_support_line and the "
+                "hard vs soft |delta| breakdown. The gate is a relative "
+                "compare to B2-a, onlyskin, and noskin."
+            )
         exit_code = 0
     elif (
         return_code == 0
-        and metrics["cos_adv_source"] is not None
-        and metrics["cos_adv_target"] is not None
+        and cosines_present
         and outside is not None
+        and float(outside) > OUTSIDE_GATE
     ):
         status = "support_failed"
         pipeline_ok = False
         note = (
             "B2 attack exited 0 but outside-M |delta| is "
             f"{outside}, not 0. pipeline_ok stays false."
+        )
+        exit_code = 1
+    elif (
+        return_code == 0
+        and cosines_present
+        and outside is not None
+        and float(outside) <= OUTSIDE_GATE
+        and not softskin_scores_ready(metrics)
+    ):
+        status = "scoring_failed"
+        pipeline_ok = False
+        note = (
+            "B2 softskin exited 0 with outside-M |delta| at the gate, "
+            "but dc_mask_support_line or the hard vs soft |delta| "
+            "breakdown was not recorded. pipeline_ok stays false."
         )
         exit_code = 1
     elif return_code == 0:
@@ -1593,6 +1898,10 @@ def run_attack(plan: b1.AttackPlan, config_path: Path, aegis_root: Path) -> dict
             if hook is None:
                 raise RuntimeError("makeup hook was not armed inside the attack")
             result["outside_m_abs_delta"] = outside_m_abs_delta(clean, features, hook.mask)
+            if hook.soft_mask is not None:
+                result.update(
+                    abs_delta_breakdown(clean, features, hook.mask, hook.soft_mask)
+                )
         except Exception as exc:
             result["error"] = (
                 f"scoring failed after the attack saved: {exc.__class__.__name__}: {exc}"
@@ -1699,13 +2008,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "DEFAULT_PARSING_LABELS: skin/cheek 1, brow 2/3, eye 4/5, lip 12/13. "
             "ablate_noskin drops label 1 and keeps {2, 3, 4, 5, 12, 13}. "
             "ablate_onlyskin is the complement and keeps {1} only. "
+            "softskin keeps that same label set. Hard makeup "
+            "{2, 3, 4, 5, 12, 13} stays at ε=0.1; skin label 1 uses ε=0.07. "
             "default is an alias of full. "
             "Does not add nose, hair, ears, or neck, and does not edit or "
             "expand the product default. ablate_noskin writes "
             "results/b2_<T>_ablate_noskin/. ablate_onlyskin writes "
-            "results/b2_<T>_ablate_onlyskin/. Neither overwrites "
-            "results/b2_celeba_T0/, results/b2_lfw_T0/, or the other "
-            "ablation slot. Does not launch."
+            "results/b2_<T>_ablate_onlyskin/. softskin writes only "
+            "results/b2_celeba_T0_softskin/ and results/b2_lfw_T0_softskin/. "
+            "None of them overwrite results/b2_celeba_T0/, results/b2_lfw_T0/, "
+            "or another ablation slot. Does not launch."
         ),
     )
     parser.add_argument(
@@ -1767,6 +2079,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "ablate_onlyskin defaults to results/b2_<T>_ablate_onlyskin/ "
             "(results/b2_celeba_T0_ablate_onlyskin/ for the first still; "
             "later results/b2_lfw_T0_ablate_onlyskin/). "
+            "softskin defaults to results/b2_<T>_softskin/ "
+            "(results/b2_celeba_T0_softskin/ and results/b2_lfw_T0_softskin/) "
+            "and refuses product B2 directories and other ablation slots. "
             "Each mode refuses the other modes' slots. "
             "The flat results/ directory is refused."
         ),

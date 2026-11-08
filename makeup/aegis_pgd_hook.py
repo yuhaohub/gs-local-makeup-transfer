@@ -15,6 +15,11 @@ commit ``e3d20445942cc3d41e912897675290e090f116f7``:
   ``x0 + clip(x - x0, ±ε)`` inside ``LinfBaseGradientDescent.project``.
   The patch binds a replacement ``project`` before ``attack(...)`` so
   each Foolbox step runs ``project_residual`` on the same residual.
+  B2 ``softskin`` uses the same two call sites. ``MakeupPgdHook._project_numpy``
+  calls ``project_dual_budget_residual``: hard makeup stays at ε=0.1 and
+  skin uses ε=0.07. The live B2 attack is the Foolbox path
+  (``reproject_foolbox``). The adaptive path
+  (``project_configured_delta``) shares that projection.
 
 The AEGIS tree stays gitignored. ``install_makeup_pgd_hook`` writes the
 patch and a small config into an existing checkout. It does not clone
@@ -49,7 +54,7 @@ from makeup.aegis_mask import (
     support_violation,
 )
 from makeup.mask import ArrayLike, SemanticMask, as_mask_array
-from makeup.residual import MaskLike, project_residual
+from makeup.residual import MaskLike, project_dual_budget_residual, project_residual
 
 # Blob the anchors below were read from. Not a submodule pin.
 UPSTREAM_AEGIS_COMMIT = "e3d20445942cc3d41e912897675290e090f116f7"
@@ -58,6 +63,8 @@ HELPERS_RELATIVE = Path("src/aegis/core/helpers.py")
 MODEL_RELATIVE = Path("src/aegis/core/model.py")
 CONFIG_NAME = ".gs_makeup_hook.json"
 MASK_NAME = ".gs_makeup_mask.npy"
+SOFT_MASK_NAME = ".gs_makeup_soft_mask.npy"
+SOFT_IMAGE_MASK_NAME = ".gs_makeup_soft_image_mask.npy"
 HOOK_CONFIG_ENV = "GS_MAKEUP_HOOK_CONFIG"
 # Set when ``ensure_dc_mask`` materializes an ``(N,)`` mask. Arm time on
 # the bound 306 ply does not set this: that state stays ``pending-get-xyz``.
@@ -210,6 +217,9 @@ class MakeupPgdHook:
         image_mask: Optional[ArrayLike] = None,
         camera: Optional[dict] = None,
         dc_mask_lift: str = "per-gaussian-labels",
+        soft_mask: Optional[MaskLike] = None,
+        soft_epsilon: Optional[float] = None,
+        soft_image_mask: Optional[ArrayLike] = None,
     ) -> None:
         if epsilon < 0:
             raise ValueError("epsilon must be >= 0")
@@ -220,6 +230,8 @@ class MakeupPgdHook:
                 "semantic_source must be 'per-gaussian-labels' or "
                 f"'image-parsing', got {semantic_source!r}"
             )
+        if (soft_mask is None) != (soft_epsilon is None):
+            raise ValueError("soft_mask and soft_epsilon are set together")
         self.subject = assert_subject_306(subject)
         self.epsilon = float(epsilon)
         self.kind = kind
@@ -227,6 +239,13 @@ class MakeupPgdHook:
         self.semantic_source = semantic_source
         self.dc_mask_lift = str(dc_mask_lift)
         self.camera = None if camera is None else dict(camera)
+        self.soft_epsilon = None if soft_epsilon is None else float(soft_epsilon)
+        if self.soft_epsilon is not None and (
+            self.soft_epsilon < 0 or self.soft_epsilon > self.epsilon
+        ):
+            raise ValueError(
+                f"soft_epsilon ({self.soft_epsilon}) must lie in [0, epsilon={self.epsilon}]"
+            )
         if image_mask is None:
             self.image_mask = None
         else:
@@ -237,6 +256,34 @@ class MakeupPgdHook:
                     f"image mask must have shape (H, W), got {grid.shape}"
                 )
             self.image_mask = grid
+        if soft_mask is None:
+            self.soft_mask = None
+        else:
+            np = require_numpy()
+            soft = np.asarray(as_mask_array(soft_mask), dtype=np.float64)
+            support = np.asarray(as_mask_array(mask), dtype=np.float64)
+            if soft.shape != support.shape:
+                raise ValueError(
+                    f"soft mask shape {soft.shape} does not match support {support.shape}"
+                )
+            self.soft_mask = soft
+        if soft_image_mask is None:
+            self.soft_image_mask = None
+        else:
+            np = require_numpy()
+            soft_grid = np.asarray(soft_image_mask, dtype=np.float64)
+            if soft_grid.ndim != 2:
+                raise ValueError(
+                    f"soft image mask must have shape (H, W), got {soft_grid.shape}"
+                )
+            self.soft_image_mask = soft_grid
+
+    @property
+    def budget(self) -> str:
+        """``dual`` when skin uses a tighter ball. Otherwise ``uniform``."""
+        if self.soft_mask is None:
+            return "uniform"
+        return "dual"
 
     def project_like(self, delta: ArrayLike) -> ArrayLike:
         """``project_residual`` on ``delta``, preserving array type and shape.
@@ -275,13 +322,37 @@ class MakeupPgdHook:
         return self._project_numpy(_numpy_copy(delta))
 
     def _project_numpy(self, array):
+        """Makeup projection for one residual.
+
+        Uniform hooks call ``project_residual`` at ``self.epsilon``. A
+        dual-budget hook (B2 ``softskin``) calls
+        ``project_dual_budget_residual``: hard sites stay at
+        ``self.epsilon``, soft sites use ``self.soft_epsilon``. Both
+        AEGIS loops reach this method. ``project_configured_delta`` is
+        the ``adaptive_linf_pgd_attack`` step.
+        ``reproject_foolbox`` is the ``AEGIS._run_foolbox_attack`` step
+        (B2's live ``linfpgd`` path).
+        """
         np = require_numpy()
         values = np.asarray(array)
         flat, restore = _reshape_residual(values, self.kind)
-        projected = np.asarray(
-            project_residual(flat, self.mask, self.epsilon, kind=self.kind),
-            dtype=float,
-        )
+        if self.soft_mask is not None and self.soft_epsilon is not None:
+            projected = np.asarray(
+                project_dual_budget_residual(
+                    flat,
+                    self.mask,
+                    self.soft_mask,
+                    self.epsilon,
+                    self.soft_epsilon,
+                    kind=self.kind,
+                ),
+                dtype=float,
+            )
+        else:
+            projected = np.asarray(
+                project_residual(flat, self.mask, self.epsilon, kind=self.kind),
+                dtype=float,
+            )
         restored = restore(projected)
         if np.issubdtype(values.dtype, np.floating) and restored.dtype != values.dtype:
             restored = restored.astype(values.dtype, copy=False)
@@ -702,11 +773,24 @@ def _write_hook_config(hook: MakeupPgdHook, aegis_root: Path) -> Path:
         image_path = root / ".gs_makeup_image_mask.npy"
         np.save(image_path, np.asarray(hook.image_mask, dtype=np.float64))
         image_mask_path = str(image_path.resolve())
+    soft_mask_path = None
+    if hook.soft_mask is not None:
+        soft_path = root / SOFT_MASK_NAME
+        np.save(soft_path, np.asarray(hook.soft_mask, dtype=np.float64))
+        soft_mask_path = str(soft_path.resolve())
+    soft_image_mask_path = None
+    if hook.soft_image_mask is not None:
+        soft_image_path = root / SOFT_IMAGE_MASK_NAME
+        np.save(soft_image_path, np.asarray(hook.soft_image_mask, dtype=np.float64))
+        soft_image_mask_path = str(soft_image_path.resolve())
     config_path = root / CONFIG_NAME
     payload = {
         "version": 1,
         "subject": hook.subject,
         "epsilon": hook.epsilon,
+        "hard_epsilon": hook.epsilon,
+        "soft_epsilon": hook.soft_epsilon,
+        "budget": hook.budget,
         "kind": hook.kind,
         "semantic_source": hook.semantic_source,
         "dc_mask_lift": hook.dc_mask_lift,
@@ -716,6 +800,8 @@ def _write_hook_config(hook: MakeupPgdHook, aegis_root: Path) -> Path:
         "repo_root": str(_repo_root()),
         "mask_npy": str(mask_path.resolve()),
         "image_mask_npy": image_mask_path,
+        "soft_mask_npy": soft_mask_path,
+        "soft_image_mask_npy": soft_image_mask_path,
         "upstream_commit_verified": UPSTREAM_AEGIS_COMMIT,
         "call_sites": [
             "src/aegis/core/helpers.py:adaptive_linf_pgd_attack",
@@ -798,6 +884,14 @@ def install_makeup_pgd_hook(
             f"lift={hook.dc_mask_lift}, mask_shape="
             f"{tuple(int(dim) for dim in _spatial_from_mask(hook.mask).shape)}. "
             + (
+                "Dual budget: hard sites use that ε; soft sites use "
+                f"ε={hook.soft_epsilon} via project_dual_budget_residual "
+                "inside MakeupPgdHook._project_numpy "
+                "(project_configured_delta and reproject_foolbox). "
+                if hook.soft_epsilon is not None
+                else ""
+            )
+            + (
                 "The (H, W) parsing stays the semantic source. "
                 "mask_avatar samples it at gaussians.get_xyz before the "
                 "first Foolbox step, producing a per-Gaussian DC mask. "
@@ -852,6 +946,28 @@ def load_hook_from_config(path: Optional[Path] = None) -> Optional[MakeupPgdHook
         if not image_file.is_file():
             raise ValueError(f"makeup hook image mask is missing: {image_file}")
         image_mask = np.load(image_file, allow_pickle=False)
+    soft_epsilon = meta.get("soft_epsilon")
+    soft_mask = None
+    soft_path = meta.get("soft_mask_npy")
+    if soft_epsilon is not None or soft_path:
+        if soft_epsilon is None or not soft_path:
+            raise ValueError(
+                "dual-budget makeup hook needs both soft_epsilon and soft_mask_npy"
+            )
+        soft_file = Path(soft_path)
+        if not soft_file.is_file():
+            raise ValueError(f"makeup hook soft mask is missing: {soft_file}")
+        soft_mask = np.load(soft_file, allow_pickle=False)
+        soft_epsilon = float(soft_epsilon)
+    soft_image_mask = None
+    soft_image_path = meta.get("soft_image_mask_npy")
+    if soft_image_path:
+        soft_image_file = Path(soft_image_path)
+        if not soft_image_file.is_file():
+            raise ValueError(
+                f"makeup hook soft image mask is missing: {soft_image_file}"
+            )
+        soft_image_mask = np.load(soft_image_file, allow_pickle=False)
     hook = MakeupPgdHook(
         mask,
         epsilon,
@@ -861,6 +977,9 @@ def load_hook_from_config(path: Optional[Path] = None) -> Optional[MakeupPgdHook
         image_mask=image_mask,
         camera=meta.get("camera"),
         dc_mask_lift=str(meta.get("dc_mask_lift", "per-gaussian-labels")),
+        soft_mask=soft_mask,
+        soft_epsilon=soft_epsilon,
+        soft_image_mask=soft_image_mask,
     )
     _CONFIG_CACHE_KEY = key
     _CONFIG_CACHE_HOOK = hook
@@ -972,7 +1091,9 @@ def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> M
 
     The new ``(N,)`` mask is logged once, as
     ``mask (N,) nz=<count> frac=<fraction>``. That line is the lift, not
-    the armed ``pending-get-xyz`` image mask.
+    the armed ``pending-get-xyz`` image mask. A dual-budget hook samples
+    the soft image at the same means. The logged line is still the full
+    support, not the soft subset.
     """
     if hook.semantic_source != "image-parsing":
         return hook
@@ -987,15 +1108,26 @@ def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> M
             f"{tuple(spatial.shape)}. Pass gaussians.get_xyz so it can be "
             "sampled onto the (N, 1, 3) residual before Foolbox project."
         )
+    if hook.soft_epsilon is not None and hook.soft_image_mask is None:
+        raise ValueError("dual-budget image hook is missing the soft image mask")
     camera = hook.camera or {}
     radius = float(camera.get("radius", b0a_camera_radius()))
     fovy = float(camera.get("fovy_deg", FRONTAL_FOVY_DEG))
+    means = _attacked_means(gaussians, attacked_mask)
     lifted = sample_image_mask(
         hook.image_mask,
-        _attacked_means(gaussians, attacked_mask),
+        means,
         radius=radius,
         fovy_deg=fovy,
     )
+    lifted_soft = None
+    if hook.soft_image_mask is not None:
+        lifted_soft = sample_image_mask(
+            hook.soft_image_mask,
+            means,
+            radius=radius,
+            fovy_deg=fovy,
+        )
     lifted_hook = MakeupPgdHook(
         lifted,
         hook.epsilon,
@@ -1005,9 +1137,35 @@ def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> M
         image_mask=hook.image_mask,
         camera=hook.camera,
         dc_mask_lift="projected-means",
+        soft_mask=lifted_soft,
+        soft_epsilon=hook.soft_epsilon,
+        soft_image_mask=hook.soft_image_mask,
     )
     _log_dc_mask_support(lifted_hook.mask)
     return lifted_hook
+
+
+def _soft_weight(labels, soft_label_ids, support):
+    """Hard 0/1 map of ``soft_label_ids``. Those ids must already lie in ``support``."""
+    np = require_numpy()
+    ids = {int(label_id) for label_id in soft_label_ids}
+    if not ids:
+        raise ValueError("soft_label_ids is empty")
+    soft = np.zeros(np.asarray(labels).shape, dtype=np.float64)
+    grid = np.asarray(labels)
+    for label_id in ids:
+        soft = np.maximum(soft, (grid == label_id).astype(np.float64))
+    support_arr = np.asarray(support, dtype=np.float64)
+    if soft.shape != support_arr.shape:
+        raise ValueError(
+            f"soft label map shape {soft.shape} does not match support {support_arr.shape}"
+        )
+    if np.any((soft > 0) & (support_arr <= 0)):
+        raise ValueError(
+            "soft_label_ids fall outside the support mask. "
+            "They must be a subset of the parsing label map."
+        )
+    return soft
 
 
 def dc_hook_from_parsing(
@@ -1019,6 +1177,8 @@ def dc_hook_from_parsing(
     radius: Optional[float] = None,
     fovy_deg: Optional[float] = None,
     label_map=None,
+    soft_label_ids=None,
+    soft_epsilon: Optional[float] = None,
 ) -> MakeupPgdHook:
     """Arm a DC hook for B0-a from a parsing map.
 
@@ -1035,11 +1195,22 @@ def dc_hook_from_parsing(
     ``label_map`` is forwarded to ``SemanticMask.from_parsing``. ``None``
     keeps ``DEFAULT_PARSING_LABELS``. A B2 in-M ablation passes a subset
     for that run only. It does not edit the product default.
+
+    ``soft_label_ids`` plus ``soft_epsilon`` arm a dual budget on that
+    same support. The ids must already be inside the label map (B2
+    softskin uses skin id 1). They do not add labels and do not change
+    the union. ``ensure_dc_mask`` samples the soft image with the same
+    means as ``M``.
     """
     np = require_numpy()
+    if (soft_label_ids is None) != (soft_epsilon is None):
+        raise ValueError("soft_label_ids and soft_epsilon are set together")
     grid = np.asarray(labels)
     if grid.ndim == 1:
         mask = SemanticMask.from_parsing(grid, label_map=label_map)
+        soft = None
+        if soft_label_ids is not None:
+            soft = _soft_weight(grid, soft_label_ids, mask.union())
         return MakeupPgdHook(
             mask,
             epsilon,
@@ -1047,6 +1218,8 @@ def dc_hook_from_parsing(
             subject=subject,
             semantic_source="per-gaussian-labels",
             dc_mask_lift="per-gaussian-labels",
+            soft_mask=soft,
+            soft_epsilon=soft_epsilon,
         )
     if grid.ndim != 2:
         raise ValueError(
@@ -1056,6 +1229,9 @@ def dc_hook_from_parsing(
         SemanticMask.from_parsing(grid, label_map=label_map).union(),
         dtype=np.float64,
     )
+    soft_image = None
+    if soft_label_ids is not None:
+        soft_image = _soft_weight(grid, soft_label_ids, image)
     chosen_radius = b0a_camera_radius() if radius is None else float(radius)
     chosen_fovy = FRONTAL_FOVY_DEG if fovy_deg is None else float(fovy_deg)
     camera = {
@@ -1076,8 +1252,16 @@ def dc_hook_from_parsing(
             image_mask=image,
             camera=camera,
             dc_mask_lift="pending-get-xyz",
+            soft_mask=soft_image,
+            soft_epsilon=soft_epsilon,
+            soft_image_mask=soft_image,
         )
     lifted = sample_image_mask(image, means, radius=chosen_radius, fovy_deg=chosen_fovy)
+    lifted_soft = None
+    if soft_image is not None:
+        lifted_soft = sample_image_mask(
+            soft_image, means, radius=chosen_radius, fovy_deg=chosen_fovy
+        )
     return MakeupPgdHook(
         lifted,
         epsilon,
@@ -1087,6 +1271,9 @@ def dc_hook_from_parsing(
         image_mask=image,
         camera=camera,
         dc_mask_lift="projected-means",
+        soft_mask=lifted_soft,
+        soft_epsilon=soft_epsilon,
+        soft_image_mask=soft_image,
     )
 
 

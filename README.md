@@ -282,7 +282,7 @@ python src/baselines/b2_makeup_impersonation.py
 - `--launch` 必须和 `--arm-hook` 一起用。缺照片、缺 `parsing/306.npy`、缺 306 头像或 CUDA 时不启动。
 - `--parsing` 如果落在 `masks/` 下，或文件名不是 `306.npy`，会被拒绝。
 - `--adaptive-epsilon` 和 `--select-regions` 会被拒绝。前者不是这条 Foolbox 路径，后者是 FLAME 区域，不是 `from_parsing`。
-- `--ablate`（同 `--mask-labels`）：这次运行的 in-M 消融。默认 `full`（省略，或写 `default`）仍用 `DEFAULT_PARSING_LABELS`。导师锁定的两刀互补：`ablate_noskin` 去掉标签 1，`ablate_onlyskin` 只留标签 1。这不改变妆容 M 的定义，也不把默认标签集扩大。
+- `--ablate`（同 `--mask-labels`）：这次运行的 in-M 消融。默认 `full`（省略，或写 `default`）仍用 `DEFAULT_PARSING_LABELS`。导师锁定的两刀互补：`ablate_noskin` 去掉标签 1，`ablate_onlyskin` 只留标签 1。`softskin` 不改标签集：硬妆 `{2, 3, 4, 5, 12, 13}` 仍是 `project_residual` 的 ε=0.1，皮肤标签 1 用更紧的 ε=0.07。这不改变妆容 M 的定义，也不把默认标签集扩大。默认命令仍然不加 `--launch`。
 
 ### in-M 消融（不改变妆容定义）
 
@@ -292,15 +292,46 @@ python src/baselines/b2_makeup_impersonation.py
 
 | 模式 | 标签 | 摘要目录 |
 | --- | --- | --- |
-| `full`（默认，可省略；`default` 同义） | 上面的默认全集 | `results/b2_celeba_T0/` |
+| `full`（默认，可省略；`default` 同义） | 上面的默认全集，ε=0.1 | `results/b2_celeba_T0/` |
 | `ablate_noskin` | 去掉 1，只留 {2, 3, 4, 5, 12, 13} | `results/b2_celeba_T0_ablate_noskin/` |
 | `ablate_onlyskin` | 只留 {1}，去掉唇、眼、眉 | `results/b2_celeba_T0_ablate_onlyskin/` |
+| `softskin` | 默认全集不变。硬妆 {2, 3, 4, 5, 12, 13} ε=0.1；皮肤 1 ε=0.07 | `results/b2_celeba_T0_softskin/` |
 
-`ablate_onlyskin` 是 `ablate_noskin` 的互补刀：两刀的标签并起来仍是默认 M，交集为空。LFW 后一刀对应 `results/b2_lfw_T0_ablate_noskin/` 和 `results/b2_lfw_T0_ablate_onlyskin/`。`ablate_onlyskin` 不覆盖 `results/b2_celeba_T0/`、`results/b2_lfw_T0/`，也不覆盖 `*_ablate_noskin/`。默认命令仍然不加 `--launch`。不把鼻子、头发、耳朵、脖子补进 M，也不改 `DEFAULT_PARSING_LABELS`。
+`ablate_onlyskin` 是 `ablate_noskin` 的互补刀：两刀的标签并起来仍是默认 M，交集为空。LFW 后一刀对应 `results/b2_lfw_T0_ablate_noskin/`、`results/b2_lfw_T0_ablate_onlyskin/` 和 `results/b2_lfw_T0_softskin/`。`ablate_onlyskin` 不覆盖 `results/b2_celeba_T0/`、`results/b2_lfw_T0/`，也不覆盖 `*_ablate_noskin/`。`softskin` 只写这两个 `*_softskin/` 目录，拒绝产品目录，也拒绝 noskin / onlyskin 等其他消融槽。默认命令仍然不加 `--launch`。不把鼻子、头发、耳朵、脖子补进 M，也不改 `DEFAULT_PARSING_LABELS`。
 
-图像域覆盖来自已经测过的 `(H, W)` 像素，不是高斯计数。默认 M 大约 10.22%；`ablate_noskin` 大约 0.7888%；因此 `ablate_onlyskin` 大约 9.43%（约 10.22 − 0.79）。`--arm-hook` 在绑定 ply 上仍是 `dc_mask_lift=pending-get-xyz`，这些百分比不是已经 lift 的 `(N,)`。
+图像域覆盖来自已经测过的 `(H, W)` 像素，不是高斯计数。默认 M 大约 10.22%；`ablate_noskin` 大约 0.7888%；因此 `ablate_onlyskin` 大约 9.43%（约 10.22 − 0.79）。`softskin` 的支撑宽度与默认 M 相同，变的只是皮肤幅度。`--arm-hook` 在绑定 ply 上仍是 `dc_mask_lift=pending-get-xyz`，这些百分比不是已经 lift 的 `(N,)`。
 
-PLY `projected-means` 是暂定（provisional）数字，要等 launch 打出 `mask (N,) nz=… frac=…` 才写进 summary 的 `dc_mask_shape` / `dc_mask_nonzero` / `dc_mask_fraction` / `dc_mask_support_line`。在那一行出现之前不要把下面的计数当成这次运行的测量：full 大约 2.307%（2054/89021）；noskin 大约 0.2033%（181）；onlyskin 大约 2.10%（约 1873 = 2054 − 181）。
+PLY `projected-means` 是暂定（provisional）数字，要等 launch 打出 `mask (N,) nz=… frac=…` 才写进 summary 的 `dc_mask_shape` / `dc_mask_nonzero` / `dc_mask_fraction` / `dc_mask_support_line`。在那一行出现之前不要把下面的计数当成这次运行的测量：full 大约 2.307%（2054/89021）；noskin 大约 0.2033%（181）；onlyskin 大约 2.10%（约 1873 = 2054 − 181）。`softskin` 不改这组支撑，所以不要另造一份 `(N,)` 计数。
+
+### softskin（同一支撑，皮肤球更紧）
+
+支撑集仍是 `DEFAULT_PARSING_LABELS` `{1, 2, 3, 4, 5, 12, 13}`。不新增 2D 标签。图像域 M 与 B2-a/b 相同（`[540, 960]`，约 10.22% 像素）。`(N,)` 仍只在 `ensure_dc_mask` 之后出现，摘要里的一行是 `mask (N,) nz=… frac=…`。武装状态保持 `dc_mask_lift=pending-get-xyz`。变的只是皮肤高斯上的幅度。
+
+预算来自两篇论文，不改攻击超参本身（AEGIS 仍先按 ε=0.1 做 L∞）：
+
+- AEGIS 区域自适应 ε：皮肤用 0.7×（[arXiv:2511.17747](https://arxiv.org/html/2511.17747)）。这里冻结为 ε_skin=0.07。
+- Adv-Makeup 把攻击收在妆容 / 眶周（[arXiv:2105.03162](https://arxiv.org/abs/2105.03162)）。唇、眼、眉仍走原来的硬 `project_residual`，ε=0.1。
+
+实现落在 `MakeupPgdHook._project_numpy`：它调用 `project_dual_budget_residual`。两条 AEGIS 循环都进这个方法。`adaptive_linf_pgd_attack` 经 `project_configured_delta`；`AEGIS._run_foolbox_attack` 经 `bind_foolbox_attack` / `reproject_foolbox`。B2 实际开跑的是 Foolbox `linfpgd` 那条。
+
+softskin 的门禁是相对 B2-a、onlyskin、noskin 比较。计分要有 `pipeline_ok`、outside-M `|δ|=0`（`outside_m_abs_delta`）、`dc_mask_support_line`，以及硬区 / 软区 `|δ|`（`hard_abs_delta_{mean,p50,p95}` 与 `soft_abs_delta_{mean,p50,p95}`）。接线摘要里这些测量保持空。
+
+无 GPU 的 softskin 接线（只写摘要，不装钩子，不开 GPU）：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py --ablate softskin
+```
+
+清单放行之后才加 `--arm-hook --launch`。摘要进 `results/b2_celeba_T0_softskin/`，不覆盖 `results/b2_celeba_T0/`，也不写入 `results/b2_celeba_T0_ablate_noskin/` 或 `results/b2_celeba_T0_ablate_onlyskin/`：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
+  --parsing /root/autodl-fs/gs-assets/parsing/306.npy \
+  --ablate softskin \
+  --arm-hook \
+  --launch
+```
 
 无 GPU 的消融接线（只写摘要，不装钩子，不开 GPU）：
 
@@ -362,7 +393,7 @@ python src/baselines/tests/test_b2_makeup_impersonation.py
 |----|------|
 | B0 | AEGIS 原文去身份复现（正式主体 NeRSemble 306；B0-b / FaceScape 527 已取消） |
 | B1 | 同接口改定向冒充（全脸，CelebA/LFW 静止照片，无妆容 mask；第一刀 celeba_T0.jpg） |
-| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；in-M 消融 `ablate_noskin` 写 `results/b2_<T>_ablate_noskin/`，互补刀 `ablate_onlyskin`（只留标签 1）写 `results/b2_<T>_ablate_onlyskin/`，不改默认 M，也不互相覆盖；默认不 `--launch` |
+| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；in-M 消融 `ablate_noskin` 写 `results/b2_<T>_ablate_noskin/`，互补刀 `ablate_onlyskin`（只留标签 1）写 `results/b2_<T>_ablate_onlyskin/`；`softskin` 同一支撑、皮肤 ε=0.07，只写 `results/b2_<T>_softskin/`，门禁相对 B2-a / onlyskin / noskin；不改默认 M，也不互相覆盖；默认不 `--launch` |
 | M  | + DPA + 预处理不变（主方法） |
 | A1/A2/A3 | 消融 DPA / 预处理 / univ |
 | C1 | 中期最优管线 |
