@@ -31,7 +31,10 @@ labels ``{2, 3, 4, 5, 12, 13}`` stay on ``project_residual`` at ε=0.1.
 Skin label ``1`` uses ε=0.07 (AEGIS region-adaptive 0.7×). It writes
 only ``results/b2_<T>_softskin/``. None of these modes add nose, hair,
 ears, or neck, and none edit the product default or overwrite another
-slot. The default CLI does not pass ``--launch``.
+slot. ``--attack-steps`` defaults to 300 and keeps those slots. ``600``
+and ``900`` write only ``results/b2_celeba_T0_steps600/`` and
+``results/b2_celeba_T0_steps900/``. They refuse product B2 and the other
+ablation slots. The default CLI does not pass ``--launch``.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ import subprocess
 import sys
 import tempfile
 import traceback
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -99,6 +103,10 @@ class SummarySlotError(ValueError):
     """The requested summary directory would clobber another experiment."""
 
 
+class AttackStepsError(ValueError):
+    """``--attack-steps`` is not 300, 600, or 900."""
+
+
 class MaskPathError(ValueError):
     """The parsing path is not the frozen ``parsing/306.npy`` contract."""
 
@@ -135,6 +143,12 @@ MASK_LABEL_CHOICES = tuple(sorted(_MASK_LABEL_ALIASES))
 
 # Frozen product directories. An ablation must not write these.
 PRODUCT_FULL_SLOTS = frozenset({"b2_celeba_T0", "b2_lfw_T0"})
+# Foolbox steps. 300 is the product default. 600 and 900 are opt-in and
+# write only the CelebA T0 steps slots below.
+DEFAULT_ATTACK_STEPS = b1.ATTACK_STEPS
+ALLOWED_ATTACK_STEPS = (DEFAULT_ATTACK_STEPS, 600, 900)
+_EXTENDED_ATTACK_STEPS = (600, 900)
+_STEPS_STILL = "celeba_T0"
 _FROZEN_STILL_STEMS = ("celeba_T0", "lfw_T0")
 _SLOT_MODES = (
     MASK_LABELS_FULL,
@@ -455,14 +469,51 @@ def summary_stem(path: Path) -> str:
     return stem
 
 
-def summary_slot(path: Path, mask_labels: str | None = None) -> str:
+def resolve_attack_steps(value: int | str | None) -> int:
+    """Return 300, 600, or 900. ``None`` is the product default, 300."""
+    if value is None:
+        return DEFAULT_ATTACK_STEPS
+    try:
+        steps = int(value)
+    except (TypeError, ValueError) as exc:
+        raise AttackStepsError(
+            f"--attack-steps must be 300, 600, or 900, got {value!r}."
+        ) from exc
+    if steps not in ALLOWED_ATTACK_STEPS:
+        raise AttackStepsError(
+            "--attack-steps allows 300 (default), 600, and 900. "
+            f"Refusing {steps}."
+        )
+    return steps
+
+
+def steps_slot_name(steps: int) -> str | None:
+    """``b2_celeba_T0_steps600`` or ``steps900``. Default 300 has no suffix."""
+    resolved = resolve_attack_steps(steps)
+    if resolved == DEFAULT_ATTACK_STEPS:
+        return None
+    return f"b2_{_STEPS_STILL}_steps{resolved}"
+
+
+def summary_slot(
+    path: Path,
+    mask_labels: str | None = None,
+    attack_steps: int | None = None,
+) -> str:
     """``b2_<T>`` for the product set.
 
     ``ablate_noskin`` is ``b2_<T>_ablate_noskin``. ``ablate_onlyskin`` is
     ``b2_<T>_ablate_onlyskin``. ``softskin`` is ``b2_<T>_softskin``.
     The mode name is already the suffix, so it is not prefixed with a
     second ``ablate_``.
+
+    ``attack_steps`` 600 and 900 are ``b2_celeba_T0_steps600`` and
+    ``b2_celeba_T0_steps900``. Default 300 keeps the mode slot above.
     """
+    if attack_steps is not None:
+        extended = steps_slot_name(attack_steps)
+        if extended is not None:
+            return extended
     mode, _mapping = resolve_mask_labels(mask_labels)
     slot = f"b2_{summary_stem(path)}"
     if mode == MASK_LABELS_FULL:
@@ -470,14 +521,24 @@ def summary_slot(path: Path, mask_labels: str | None = None) -> str:
     return f"{slot}_{mode}"
 
 
-def default_summary_dir(image: Path, mask_labels: str | None = None) -> Path:
+def default_summary_dir(
+    image: Path,
+    mask_labels: str | None = None,
+    attack_steps: int | None = None,
+) -> Path:
     """One still, one directory. Never the flat ``results/`` folder.
 
     ``full`` stays ``results/b2_<T>/``. ``ablate_noskin`` uses
     ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` uses
     ``results/b2_<T>_ablate_onlyskin/``. An ablation does not overwrite
-    the product slot or the other ablation slot.
+    the product slot or the other ablation slot. ``--attack-steps`` 600
+    and 900 use ``results/b2_celeba_T0_steps600/`` and
+    ``results/b2_celeba_T0_steps900/`` only.
     """
+    if attack_steps is not None:
+        extended = steps_slot_name(attack_steps)
+        if extended is not None:
+            return RESULTS_DIR / extended
     return RESULTS_DIR / summary_slot(image, mask_labels)
 
 
@@ -485,9 +546,10 @@ def resolve_summary_dir(
     flag: str | None,
     image: Path,
     mask_labels: str | None = None,
+    attack_steps: int | None = None,
 ) -> Path:
     if flag is None:
-        return default_summary_dir(image, mask_labels)
+        return default_summary_dir(image, mask_labels, attack_steps)
     path = Path(flag).expanduser()
     if not path.is_absolute():
         path = REPO_ROOT / path
@@ -611,6 +673,56 @@ def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) 
     )
 
 
+def assert_attack_steps_slot(
+    directory: Path,
+    image: Path,
+    mask_labels: str | None,
+    attack_steps: int | None,
+) -> None:
+    """Keep 600 and 900 in ``results/b2_celeba_T0_steps{N}/`` only.
+
+    Default 300 keeps the product and ablation directories and must not
+    write a steps slot. 600 and 900 refuse product B2, the other ablation
+    slots, a non-CelebA still, and any ``--ablate`` mode.
+
+    Raises:
+        SummarySlotError: the directory is not the one slot this step count owns.
+        AttackStepsError: the step count is not 300, 600, or 900.
+    """
+    steps = resolve_attack_steps(attack_steps)
+    name = steps_slot_name(steps)
+    resolved = directory.resolve()
+    extended_names = {steps_slot_name(other) for other in _EXTENDED_ATTACK_STEPS}
+    if name is None:
+        owned = {(RESULTS_DIR / slot).resolve() for slot in extended_names}
+        if resolved in owned or resolved.name in extended_names:
+            raise SummarySlotError(
+                f"Default {DEFAULT_ATTACK_STEPS} steps refuses {directory}. "
+                "600 writes only results/b2_celeba_T0_steps600/. "
+                "900 writes only results/b2_celeba_T0_steps900/. "
+                "Product B2 and the other ablation slots stay on their own directories."
+            )
+        return
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    expected = (RESULTS_DIR / name).resolve()
+    if mode != MASK_LABELS_FULL or summary_stem(image) != _STEPS_STILL:
+        raise SummarySlotError(
+            f"--attack-steps {steps} refuses this run ({summary_stem(image)}, {mode}). "
+            f"It writes only results/{name}/ for full-M celeba_T0. "
+            "Product B2 (results/b2_celeba_T0/ and results/b2_lfw_T0/) and the "
+            "other ablation slots (ablate_noskin, ablate_onlyskin, softskin) stay put. "
+            "Labels, epsilon, and softskin are unchanged. This flag does not launch."
+        )
+    if resolved != expected:
+        raise SummarySlotError(
+            f"--attack-steps {steps} refuses {directory}. "
+            f"It writes only results/{name}/. "
+            "Product B2 (results/b2_celeba_T0/ and results/b2_lfw_T0/) and the "
+            "other ablation slots (ablate_noskin, ablate_onlyskin, softskin) stay put. "
+            "Labels, epsilon, and softskin are unchanged. This flag does not launch."
+        )
+
+
 def output_name_for(path: Path) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem).strip("._") or "T"
     return f"{OUTPUT_PREFIX}_{stem}"
@@ -629,7 +741,7 @@ def b2_aegis_kwargs(plan: b1.AttackPlan) -> dict:
     kwargs["surrogate_keys"] = None
     kwargs["targeted_features"] = b1.TARGET_FEATURES
     kwargs["adv_attack"] = b1.ADV_ATTACK
-    kwargs["attack_steps"] = b1.ATTACK_STEPS
+    kwargs["attack_steps"] = plan.attack_steps
     kwargs["embedder_name"] = b1.EMBEDDER
     kwargs["epsilons"] = [b1.EPSILON]
     return kwargs
@@ -649,11 +761,18 @@ def expected_outputs(plan: b1.AttackPlan, aegis_root: Path) -> tuple[Path, Path]
     return avatar, render
 
 
-def user_command(image: Path, parsing: Path, mask_labels: str | None = None) -> str:
+def user_command(
+    image: Path,
+    parsing: Path,
+    mask_labels: str | None = None,
+    attack_steps: int | None = None,
+) -> str:
     """The GPU command. The default CLI does not pass ``--launch``.
 
     ``full`` omits ``--ablate``. A narrower in-M mode includes the
     canonical name and still does not turn launch on by itself.
+    Default 300 omits ``--attack-steps``. 600 and 900 record the flag
+    and still do not turn launch on by themselves.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
     parts = [
@@ -663,6 +782,9 @@ def user_command(image: Path, parsing: Path, mask_labels: str | None = None) -> 
     ]
     if mode != MASK_LABELS_FULL:
         parts.append(f"--ablate {mode}")
+    steps = DEFAULT_ATTACK_STEPS if attack_steps is None else resolve_attack_steps(attack_steps)
+    if steps != DEFAULT_ATTACK_STEPS:
+        parts.append(f"--attack-steps {steps}")
     parts.append("--arm-hook --launch")
     return " ".join(parts)
 
@@ -1069,6 +1191,8 @@ def worker_command(
     ]
     if mode != MASK_LABELS_FULL:
         command.extend(["--ablate", mode])
+    if plan.attack_steps != DEFAULT_ATTACK_STEPS:
+        command.extend(["--attack-steps", str(plan.attack_steps)])
     return command
 
 
@@ -1170,7 +1294,12 @@ def _empty_metrics(
     avatar_out, render_out = expected_outputs(plan, aegis_root)
     labels = mask_label_fields(mask_labels, mask_labels_requested)
     return {
-        "command": user_command(plan.impersonation_image, parsing, labels["mask_labels"]),
+        "command": user_command(
+            plan.impersonation_image,
+            parsing,
+            labels["mask_labels"],
+            plan.attack_steps,
+        ),
         "command_attempted": False,
         "return_code": None,
         "log_tail": "",
@@ -1199,7 +1328,11 @@ def _empty_metrics(
         "parsing_present": b1.image_ready(parsing),
         "corpus": b1.corpus_for(plan.impersonation_image),
         "smoke_target": b1.smoke_target_for(plan.impersonation_image),
-        "summary_slot": summary_slot(plan.impersonation_image, labels["mask_labels"]),
+        "summary_slot": summary_slot(
+            plan.impersonation_image,
+            labels["mask_labels"],
+            plan.attack_steps,
+        ),
         "mask_labels": labels["mask_labels"],
         "mask_labels_requested": labels["mask_labels_requested"],
         "parsing_label_ids": labels["parsing_label_ids"],
@@ -1247,15 +1380,17 @@ def _empty_metrics(
 
 def _payload(plan, parsing, summary_dir, *, status, note, metrics, pipeline_ok=False) -> dict:
     mode = str((metrics or {}).get("mask_labels") or MASK_LABELS_FULL)
+    steps = int(getattr(plan, "attack_steps", DEFAULT_ATTACK_STEPS))
     return {
         "experiment_id": EXPERIMENT_ID,
         "desc": EXPERIMENT_DESC,
         "status": status,
         "pipeline_ok": pipeline_ok,
         "subject": plan.subject,
+        "attack_steps": steps,
         "corpus": b1.corpus_for(plan.impersonation_image),
         "smoke_target": b1.smoke_target_for(plan.impersonation_image),
-        "summary_slot": summary_slot(plan.impersonation_image, mode),
+        "summary_slot": summary_slot(plan.impersonation_image, mode, steps),
         "mask_labels": mode,
         "parsing_label_ids": list(
             (metrics or {}).get("parsing_label_ids") or parsing_label_ids(mode)
@@ -1303,6 +1438,7 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "experiment_id",
                 "status",
                 "subject",
+                "attack_steps",
                 "pipeline_ok",
                 "return_code",
                 "cos_adv_source",
@@ -1335,6 +1471,7 @@ def write_summary(summary_dir: Path, payload: dict) -> tuple[Path, Path]:
                 "experiment_id": payload.get("experiment_id", ""),
                 "status": payload.get("status", ""),
                 "subject": payload.get("subject", ""),
+                "attack_steps": metrics.get("attack_steps", payload.get("attack_steps", "")),
                 "pipeline_ok": str(bool(payload.get("pipeline_ok"))).lower(),
                 "return_code": "" if return_code is None else return_code,
                 "cos_adv_source": "" if cos_source is None else cos_source,
@@ -1439,6 +1576,12 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
     if args.worker:
         return worker_main(args)
 
+    try:
+        steps = resolve_attack_steps(args.attack_steps)
+    except AttackStepsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
     image_text = resolve_impersonation_image(args.impersonation_image)
     parsing = resolve_parsing_path(args.parsing)
     try:
@@ -1448,10 +1591,11 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         return 2
     requested = MASK_LABELS_FULL if args.ablate is None else str(args.ablate)
     image_path = Path(image_text)
-    summary_dir = resolve_summary_dir(args.summary_dir, image_path, mode)
+    summary_dir = resolve_summary_dir(args.summary_dir, image_path, mode, steps)
     try:
         assert_summary_slot(summary_dir)
         assert_ablation_slot(summary_dir, image_path, mode)
+        assert_attack_steps_slot(summary_dir, image_path, mode, steps)
     except SummarySlotError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1461,7 +1605,7 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
 
         assert_subject_306(args.subject)
     except ValueError as exc:
-        plan = b1.build_plan(image_text, launch=False)
+        plan = replace(b1.build_plan(image_text, launch=False), attack_steps=steps)
         metrics = _empty_metrics(
             plan,
             parsing,
@@ -1473,7 +1617,7 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         )
         return _refuse(summary_dir, plan, parsing, metrics, "refused_subject", str(exc))
 
-    plan = b1.build_plan(image_text, launch=False)
+    plan = replace(b1.build_plan(image_text, launch=False), attack_steps=steps)
     aegis_root = Path(args.aegis_root).expanduser()
     metrics = _empty_metrics(
         plan,
@@ -1932,7 +2076,27 @@ def worker_main(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     image = resolve_impersonation_image(args.impersonation_image)
-    plan = b1.build_plan(image, launch=True)
+    try:
+        steps = resolve_attack_steps(args.attack_steps)
+    except AttackStepsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if steps != DEFAULT_ATTACK_STEPS:
+        try:
+            mode, _mapping = resolve_mask_labels(args.ablate)
+        except MaskLabelError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if mode != MASK_LABELS_FULL or summary_stem(Path(image)) != _STEPS_STILL:
+            print(
+                f"--attack-steps {steps} writes only "
+                f"results/b2_celeba_T0_steps{steps}/. "
+                "Refusing a worker that is not full-M CelebA T0. "
+                "Product B2 and the other ablation slots stay put.",
+                file=sys.stderr,
+            )
+            return 2
+    plan = replace(b1.build_plan(image, launch=True), attack_steps=steps)
     aegis_root = Path(args.aegis_root).expanduser()
     config = hook_config_path(aegis_root)
     out = Path(args.summary_out).expanduser()
@@ -2021,6 +2185,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--attack-steps",
+        type=int,
+        default=DEFAULT_ATTACK_STEPS,
+        choices=ALLOWED_ATTACK_STEPS,
+        help=(
+            "Foolbox linfpgd steps. Default 300 keeps the product slot and "
+            "the ablation slots. 600 writes only results/b2_celeba_T0_steps600/. "
+            "900 writes only results/b2_celeba_T0_steps900/. "
+            "600 and 900 refuse product B2 directories and the other ablation "
+            "slots (ablate_noskin, ablate_onlyskin, softskin). "
+            "Does not change labels, epsilon, or softskin, and does not launch."
+        ),
+    )
+    parser.add_argument(
         "--arm-hook",
         action="store_true",
         help=(
@@ -2083,6 +2261,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "(results/b2_celeba_T0_softskin/ and results/b2_lfw_T0_softskin/) "
             "and refuses product B2 directories and other ablation slots. "
             "Each mode refuses the other modes' slots. "
+            "--attack-steps 600 and 900 default to "
+            "results/b2_celeba_T0_steps600/ and results/b2_celeba_T0_steps900/ "
+            "and refuse product B2 directories and the other ablation slots. "
             "The flat results/ directory is refused."
         ),
     )
