@@ -288,25 +288,49 @@ def _as_float_array(value):
     return np.asarray(value, dtype=float)
 
 
+def _dc_colors(values):
+    """Per-Gaussian DC colors as ``(N, 3)``.
+
+    Clean ``att_tensor`` is ``(N, 1, 3)``. Foolbox unsqueezes that tensor,
+    so the saved adversarial features are ``(1, N, 1, 3)``. Adaptive DC
+    after the singleton squeeze is ``(N, 3)``. All three are the same
+    Gaussian order.
+    """
+    from makeup.aegis_pgd_hook import _reshape_residual
+
+    colors, _restore = _reshape_residual(values, "dc")
+    return colors
+
+
 def outside_m_abs_delta(clean, adv, mask) -> float:
     """Max ``|adv - clean|`` outside ``M``. The B2 gate is 0.
 
-    Accepts the DC layouts the makeup hook already projects:
-    ``(N, 3)``, ``(N, 1, 3)``, and ``(1, N, 1, 3)``.
+    ``(N, 3)``, ``(N, 1, 3)``, and ``(1, N, 1, 3)`` may be mixed. Each
+    side is squeezed to ``(N, 3)`` before the subtraction, so a clean
+    ``att_tensor`` and a Foolbox batch still score the same Gaussians.
+    A different Gaussian count still raises.
 
     Raises:
-        ValueError: the two tensors differ in shape, or the mask does not match.
+        ValueError: a side is not one of those DC layouts, ``N`` differs,
+            or the mask does not match.
         ImportError: NumPy is not installed.
     """
     from makeup.aegis_pgd_hook import outside_support_max_abs
 
     origin = _as_float_array(clean)
     updated = _as_float_array(adv)
-    if origin.shape != updated.shape:
+    try:
+        origin_colors = _dc_colors(origin)
+        updated_colors = _dc_colors(updated)
+    except ValueError as exc:
+        raise ValueError(
+            f"clean and adversarial DC shapes differ: {origin.shape} vs {updated.shape}"
+        ) from exc
+    if origin_colors.shape != updated_colors.shape:
         raise ValueError(
             f"clean and adversarial DC shapes differ: {origin.shape} vs {updated.shape}"
         )
-    delta = updated - origin
+    delta = updated_colors - origin_colors
     return float(outside_support_max_abs(delta, mask, "dc"))
 
 
