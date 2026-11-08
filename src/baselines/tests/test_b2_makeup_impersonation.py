@@ -216,6 +216,8 @@ class PathsAndHyperparamsTest(unittest.TestCase):
         self.assertFalse(args.select_regions)
         self.assertIsNone(args.summary_dir)
         self.assertIsNone(args.ablate)
+        self.assertEqual(args.attack_steps, b1.ATTACK_STEPS)
+        self.assertEqual(args.attack_steps, 300)
         self.assertEqual(args.subject, "306")
         flagged = b2.parse_args(
             [
@@ -1912,6 +1914,241 @@ class AblateSoftskinTest(unittest.TestCase):
         self.assertIsNone(payload["metrics"]["hard_abs_delta_mean"])
 
 
+class AttackStepsRecipeTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        clear_hook_state()
+        os.environ.pop(HOOK_CONFIG_ENV, None)
+        os.environ.pop(b2.IMAGE_ENV, None)
+        os.environ.pop(b2.PARSING_ENV, None)
+
+    def test_default_stays_300_and_keeps_the_product_slot(self) -> None:
+        from makeup.mask import DEFAULT_PARSING_LABELS
+
+        before = dict(DEFAULT_PARSING_LABELS)
+        args = b2.parse_args([])
+        self.assertEqual(args.attack_steps, 300)
+        self.assertEqual(args.attack_steps, b1.ATTACK_STEPS)
+        self.assertFalse(args.launch)
+        self.assertFalse(args.arm_hook)
+        plan = b1.build_plan(b2.DEFAULT_IMPERSONATION_IMAGE, launch=False)
+        self.assertEqual(plan.attack_steps, 300)
+        kwargs = b2.b2_aegis_kwargs(plan)
+        self.assertEqual(kwargs["attack_steps"], b1.ATTACK_STEPS)
+        self.assertEqual(kwargs["attack_steps"], 300)
+        self.assertEqual(kwargs["epsilons"], [0.1])
+        celeba = Path(b2.DEFAULT_IMPERSONATION_IMAGE)
+        self.assertEqual(b2.default_summary_dir(celeba), b2.RESULTS_DIR / "b2_celeba_T0")
+        self.assertEqual(b2.summary_slot(celeba), "b2_celeba_T0")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                code = b2.main([], runner=_boom)
+                payload = json.loads(
+                    (root / "b2_celeba_T0" / "summary.json").read_text(encoding="utf-8")
+                )
+                self.assertFalse((root / "b2_celeba_T0_steps900").exists())
+                self.assertFalse((root / "b2_celeba_T0_steps600").exists())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["attack_steps"], 300)
+        self.assertEqual(payload["metrics"]["attack_steps"], 300)
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0")
+        self.assertEqual(payload["metrics"]["epsilon"], 0.1)
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertNotIn("--attack-steps", payload["metrics"]["command"])
+        self.assertFalse(payload["pipeline_ok"])
+        self.assertEqual(dict(DEFAULT_PARSING_LABELS), before)
+        self.assertEqual(b2.SOFT_SKIN_EPSILON, 0.07)
+        self.assertEqual(b2.HARD_EPSILON, 0.1)
+
+    def test_attack_steps_900_writes_only_the_steps900_slot(self) -> None:
+        from makeup.mask import DEFAULT_PARSING_LABELS
+
+        before = dict(DEFAULT_PARSING_LABELS)
+        args = b2.parse_args(["--attack-steps", "900"])
+        self.assertEqual(args.attack_steps, 900)
+        self.assertFalse(args.launch)
+        self.assertFalse(args.arm_hook)
+        celeba = Path(b2.DEFAULT_IMPERSONATION_IMAGE)
+        lfw = Path(b2.LFW_IMPERSONATION_IMAGE)
+        self.assertEqual(
+            b2.default_summary_dir(celeba, attack_steps=900),
+            b2.RESULTS_DIR / "b2_celeba_T0_steps900",
+        )
+        self.assertEqual(
+            b2.default_summary_dir(lfw, attack_steps=900),
+            b2.RESULTS_DIR / "b2_lfw_T0_steps900",
+        )
+        self.assertEqual(b2.summary_slot(celeba, attack_steps=900), "b2_celeba_T0_steps900")
+        plan = b2.apply_attack_steps(
+            b1.build_plan(b2.DEFAULT_IMPERSONATION_IMAGE, launch=False),
+            900,
+        )
+        self.assertEqual(plan.attack_steps, 900)
+        kwargs = b2.b2_aegis_kwargs(plan)
+        self.assertEqual(kwargs["attack_steps"], 900)
+        self.assertEqual(kwargs["epsilons"], [0.1])
+        self.assertEqual(b2.b2_aegis_kwargs(
+            b1.build_plan(b2.DEFAULT_IMPERSONATION_IMAGE, launch=False)
+        )["attack_steps"], 300)
+        worker = b2.worker_command(
+            plan,
+            Path(b2.DEFAULT_PARSING),
+            Path("/tmp/b2-worker.json"),
+            b1.AEGIS_ROOT,
+        )
+        self.assertEqual(worker[worker.index("--attack-steps") + 1], "900")
+        default_worker = b2.worker_command(
+            b1.build_plan(b2.DEFAULT_IMPERSONATION_IMAGE, launch=True),
+            Path(b2.DEFAULT_PARSING),
+            Path("/tmp/b2-worker.json"),
+            b1.AEGIS_ROOT,
+        )
+        self.assertNotIn("--attack-steps", default_worker)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                code = b2.main(["--attack-steps", "900"], runner=_boom)
+                slot = root / "b2_celeba_T0_steps900"
+                payload = json.loads((slot / "summary.json").read_text(encoding="utf-8"))
+                self.assertTrue((slot / "summary.csv").is_file())
+                for name in (
+                    "b2_celeba_T0",
+                    "b2_lfw_T0",
+                    "b2_celeba_T0_softskin",
+                    "b2_lfw_T0_softskin",
+                    "b2_celeba_T0_ablate_noskin",
+                    "b2_lfw_T0_ablate_noskin",
+                    "b2_celeba_T0_ablate_onlyskin",
+                    "b2_lfw_T0_ablate_onlyskin",
+                    "b2_celeba_T0_onlyskin",
+                    "b2_celeba_T0_makeup_xfer",
+                    "b2_lfw_T0_makeup_xfer",
+                    "b2_celeba_T0_steps600",
+                    "b2_lfw_T0_steps900",
+                ):
+                    self.assertFalse((root / name).exists(), name)
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0_steps900")
+        self.assertEqual(payload["attack_steps"], 900)
+        self.assertEqual(payload["metrics"]["attack_steps"], 900)
+        self.assertEqual(payload["metrics"]["epsilon"], 0.1)
+        self.assertEqual(payload["mask_labels"], "full")
+        self.assertEqual(payload["parsing_label_ids"], [1, 2, 3, 4, 5, 12, 13])
+        self.assertFalse(payload["ablation_changes_default_m"])
+        self.assertFalse(payload["pipeline_ok"])
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertIsNone(payload["metrics"]["cos_adv_source"])
+        self.assertIsNone(payload["metrics"]["outside_m_abs_delta"])
+        self.assertIn("--attack-steps 900", payload["metrics"]["command"])
+        self.assertIn("--arm-hook --launch", payload["metrics"]["command"])
+        self.assertNotIn("--ablate", payload["metrics"]["command"])
+        self.assertEqual(dict(DEFAULT_PARSING_LABELS), before)
+        self.assertEqual(b2.SOFT_SKIN_EPSILON, 0.07)
+        self.assertEqual(b2.HARD_EPSILON, 0.1)
+
+    def test_lfw_and_steps600_use_their_own_slots(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                code_lfw = b2.main(
+                    [
+                        "--attack-steps",
+                        "900",
+                        "--impersonation-image",
+                        b2.LFW_IMPERSONATION_IMAGE,
+                    ],
+                    runner=_boom,
+                )
+                lfw_payload = json.loads(
+                    (root / "b2_lfw_T0_steps900" / "summary.json").read_text(encoding="utf-8")
+                )
+                self.assertFalse((root / "b2_celeba_T0_steps900").exists())
+                self.assertFalse((root / "b2_lfw_T0").exists())
+                code_600 = b2.main(["--attack-steps", "600"], runner=_boom)
+                payload_600 = json.loads(
+                    (root / "b2_celeba_T0_steps600" / "summary.json").read_text(encoding="utf-8")
+                )
+                self.assertFalse((root / "b2_celeba_T0").exists())
+                self.assertFalse((root / "b2_celeba_T0_steps900").exists())
+        self.assertEqual(code_lfw, 0)
+        self.assertEqual(lfw_payload["summary_slot"], "b2_lfw_T0_steps900")
+        self.assertEqual(lfw_payload["metrics"]["attack_steps"], 900)
+        self.assertEqual(code_600, 0)
+        self.assertEqual(payload_600["summary_slot"], "b2_celeba_T0_steps600")
+        self.assertEqual(payload_600["attack_steps"], 600)
+        self.assertEqual(payload_600["metrics"]["attack_steps"], 600)
+        self.assertFalse(payload_600["metrics"]["command_attempted"])
+
+    def test_steps900_refuses_product_ablation_and_makeup_xfer_dirs(self) -> None:
+        product = b2.RESULTS_DIR / "b2_celeba_T0"
+        before_json = (product / "summary.json").read_bytes()
+        before_csv = (product / "summary.csv").read_bytes()
+        forbidden = [
+            product,
+            b2.RESULTS_DIR / "b2_lfw_T0",
+            b2.RESULTS_DIR / "b2_celeba_T0_softskin",
+            b2.RESULTS_DIR / "b2_lfw_T0_softskin",
+            b2.RESULTS_DIR / "b2_celeba_T0_ablate_noskin",
+            b2.RESULTS_DIR / "b2_lfw_T0_ablate_noskin",
+            b2.RESULTS_DIR / "b2_celeba_T0_ablate_onlyskin",
+            b2.RESULTS_DIR / "b2_lfw_T0_ablate_onlyskin",
+            b2.RESULTS_DIR / "b2_celeba_T0_onlyskin",
+            b2.RESULTS_DIR / "b2_celeba_T0_makeup_xfer",
+            b2.RESULTS_DIR / "b2_lfw_T0_makeup_xfer",
+            b2.RESULTS_DIR / "b2_celeba_T0_steps600",
+            b2.RESULTS_DIR / "b2_lfw_T0_steps900",
+        ]
+        for slot in forbidden:
+            code = b2.main(
+                ["--attack-steps", "900", "--summary-dir", str(slot)],
+                runner=_boom,
+            )
+            self.assertEqual(code, 2, slot)
+            self.assertFalse((slot / "summary.json").exists() and slot != product)
+        self.assertEqual((product / "summary.json").read_bytes(), before_json)
+        self.assertEqual((product / "summary.csv").read_bytes(), before_csv)
+        self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_steps900").exists())
+        self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_makeup_xfer").exists())
+        self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_softskin").exists())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                for mode in ("softskin", "ablate_noskin", "ablate_onlyskin"):
+                    code = b2.main(
+                        ["--attack-steps", "900", "--ablate", mode],
+                        runner=_boom,
+                    )
+                    self.assertEqual(code, 2, mode)
+                code = b2.main(
+                    ["--attack-steps", "900", "--summary-dir", str(root / "elsewhere")],
+                    runner=_boom,
+                )
+                self.assertEqual(code, 2)
+                self.assertFalse((root / "b2_celeba_T0_steps900").exists())
+                self.assertFalse((root / "b2_celeba_T0_softskin").exists())
+                self.assertFalse((root / "b2_celeba_T0_ablate_noskin").exists())
+                self.assertFalse((root / "b2_celeba_T0_ablate_onlyskin").exists())
+                self.assertFalse((root / "b2_celeba_T0_makeup_xfer").exists())
+                self.assertFalse((root / "elsewhere" / "summary.json").exists())
+                code = b2.main(
+                    ["--summary-dir", str(root / "b2_celeba_T0_steps900")],
+                    runner=_boom,
+                )
+                self.assertEqual(code, 2)
+                self.assertFalse((root / "b2_celeba_T0_steps900").exists())
+
+        for rejected in ("450", "1200", "0", "301", "abc"):
+            with self.assertRaises(SystemExit):
+                b2.parse_args(["--attack-steps", rejected])
+            with self.assertRaises(b2.AttackStepsError):
+                b2.resolve_attack_steps(rejected)
+        self.assertEqual(b2.resolve_attack_steps(None), 300)
+        self.assertEqual(b2.resolve_attack_steps(600), 600)
+        self.assertEqual(b2.resolve_attack_steps(900), 900)
+
+
 class DocsTest(unittest.TestCase):
     def test_readme_documents_b2_cli_without_default_launch(self) -> None:
         text = (_REPO / "README.md").read_text(encoding="utf-8")
@@ -2024,6 +2261,16 @@ class DocsTest(unittest.TestCase):
         self.assertNotIn("2.31%", text)
         self.assertNotIn("23.2", text)
         self.assertIn("parsing/306.npy", text)
+        self.assertIn(
+            "python src/baselines/b2_makeup_impersonation.py --attack-steps 900",
+            text,
+        )
+        self.assertIn("results/b2_celeba_T0_steps900/", text)
+        self.assertIn("results/b2_lfw_T0_steps900/", text)
+        self.assertIn("results/b2_*_steps600/", text)
+        self.assertIn("--attack-steps 900 --arm-hook --launch", text)
+        self.assertIn("docs/makeup_xfer_design.md", text)
+        self.assertIn("The default remains 300 steps", text)
 
 
 if __name__ == "__main__":

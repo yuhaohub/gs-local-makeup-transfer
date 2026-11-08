@@ -63,7 +63,9 @@ If any gate fails, bob refuses the GPU. No `--launch`.
 
 ## B2
 
-Recipe-knife `steps900` (`--attack-steps`, `results/b2_*_steps900/`) is a separate PR (cloud agent `bc-703cc5ed-7566-58ed-8f72-9a83ac82fd3c`); this checklist does not define that switch. Makeup-carrier design, also not wired and with no `--launch`, is `docs/makeup_xfer_design.md`.
+Makeup-carrier design, not wired here and with no `--launch`, stays `docs/makeup_xfer_design.md`.
+
+Dry `python src/baselines/b2_makeup_impersonation.py --attack-steps 900` stubs only `results/b2_celeba_T0_steps900/` (LFW `results/b2_lfw_T0_steps900/`); `--attack-steps 600` stubs `results/b2_*_steps600/`. Both refuse product B2-a, softskin, noskin, onlyskin, and `results/b2_*_makeup_xfer/`. Arm only with `--attack-steps 900 --arm-hook --launch` after gates 1–3 and mentor gate 4. The default remains 300 steps and still has no `--launch`.
 
 Wiring may merge. This section does not start a GPU run and does not add `--launch` to the default command. GPU, including B2, still requires all four gates green: gates 1–3, then mentor gate 4. The CLI is in the README「B2」section.
 

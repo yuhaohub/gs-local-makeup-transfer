@@ -31,13 +31,17 @@ labels ``{2, 3, 4, 5, 12, 13}`` stay on ``project_residual`` at ε=0.1.
 Skin label ``1`` uses ε=0.07 (AEGIS region-adaptive 0.7×). It writes
 only ``results/b2_<T>_softskin/``. None of these modes add nose, hair,
 ears, or neck, and none edit the product default or overwrite another
-slot. The default CLI does not pass ``--launch``.
+slot. ``--attack-steps`` stays 300 unless the caller passes 600 or 900.
+Those comparison counts write only ``results/b2_<T>_steps600/`` or
+``results/b2_<T>_steps900/`` and refuse the product, softskin, noskin,
+onlyskin, and makeup_xfer slots. The default CLI does not pass ``--launch``.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import os
 import re
@@ -111,6 +115,10 @@ class MaskLabelError(ValueError):
     """The name is not an in-M ablation of ``DEFAULT_PARSING_LABELS``."""
 
 
+class AttackStepsError(ValueError):
+    """``--attack-steps`` is outside the comparison set 300, 600, 900."""
+
+
 # Product makeup set. ``None`` / omitted CLI keeps this mode and does not
 # pass a ``label_map``, so ``from_parsing`` still reads the constant.
 MASK_LABELS_FULL = "full"
@@ -157,6 +165,11 @@ _SOFT_SKIN_LABEL_IDS = _ONLYSKIN_LABEL_IDS
 SKIN_EPSILON_SCALE = 0.7
 SOFT_SKIN_EPSILON = 0.07
 HARD_EPSILON = b1.EPSILON
+
+# Comparison step counts. The default stays ``b1.ATTACK_STEPS`` (300) and keeps
+# the product directory. Only 600 and 900 open an isolated slot.
+STEPS_RECIPE_STEPS = (600, 900)
+ALLOWED_ATTACK_STEPS = (b1.ATTACK_STEPS, *STEPS_RECIPE_STEPS)
 
 # Flat summary keys for the hard vs soft |δ| breakdown.
 BUDGET_STAT_FIELDS = (
@@ -455,14 +468,81 @@ def summary_stem(path: Path) -> str:
     return stem
 
 
-def summary_slot(path: Path, mask_labels: str | None = None) -> str:
+def resolve_attack_steps(value: int | str | None) -> int:
+    """Return 300, 600, or 900.
+
+    ``None`` and the B1 constant are the default 300-step run. 600 and
+    900 are the only comparison recipes. Every other count is refused.
+
+    Raises:
+        AttackStepsError: the value is not in ``ALLOWED_ATTACK_STEPS``.
+    """
+    if value is None or (isinstance(value, str) and value.strip() == ""):
+        return b1.ATTACK_STEPS
+    if isinstance(value, bool) or isinstance(value, float):
+        allowed = ", ".join(str(item) for item in ALLOWED_ATTACK_STEPS)
+        raise AttackStepsError(
+            f"--attack-steps {value!r} is refused. Allowed set: {allowed}. "
+            "Default is 300. 600 and 900 are the only comparison recipes."
+        )
+    try:
+        steps = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        allowed = ", ".join(str(item) for item in ALLOWED_ATTACK_STEPS)
+        raise AttackStepsError(
+            f"--attack-steps {value!r} is refused. Allowed set: {allowed}."
+        ) from exc
+    if steps not in ALLOWED_ATTACK_STEPS:
+        allowed = ", ".join(str(item) for item in ALLOWED_ATTACK_STEPS)
+        raise AttackStepsError(
+            f"--attack-steps {steps} is refused. Allowed set: {allowed}. "
+            "Default is 300. 600 and 900 are the only comparison recipes."
+        )
+    return steps
+
+
+def _attack_steps_arg(value: str) -> int:
+    try:
+        return resolve_attack_steps(value)
+    except AttackStepsError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def steps_recipe_suffix(attack_steps: int | None) -> str | None:
+    """``steps600`` / ``steps900``, or ``None`` for the 300-step default."""
+    steps = resolve_attack_steps(attack_steps)
+    if steps == b1.ATTACK_STEPS:
+        return None
+    return f"steps{steps}"
+
+
+def apply_attack_steps(plan: b1.AttackPlan, attack_steps: int | None) -> b1.AttackPlan:
+    """Copy ``plan`` when a comparison count replaces the 300-step default."""
+    steps = resolve_attack_steps(attack_steps)
+    if steps == b1.ATTACK_STEPS:
+        if plan.attack_steps == b1.ATTACK_STEPS:
+            return plan
+        return dataclasses.replace(plan, attack_steps=b1.ATTACK_STEPS)
+    return dataclasses.replace(plan, attack_steps=steps)
+
+
+def summary_slot(
+    path: Path,
+    mask_labels: str | None = None,
+    *,
+    attack_steps: int | None = None,
+) -> str:
     """``b2_<T>`` for the product set.
 
     ``ablate_noskin`` is ``b2_<T>_ablate_noskin``. ``ablate_onlyskin`` is
     ``b2_<T>_ablate_onlyskin``. ``softskin`` is ``b2_<T>_softskin``.
     The mode name is already the suffix, so it is not prefixed with a
-    second ``ablate_``.
+    second ``ablate_``. A comparison step count uses only ``b2_<T>_steps600``
+    or ``b2_<T>_steps900`` and does not append an ablation suffix.
     """
+    suffix = steps_recipe_suffix(attack_steps)
+    if suffix is not None:
+        return f"b2_{summary_stem(path)}_{suffix}"
     mode, _mapping = resolve_mask_labels(mask_labels)
     slot = f"b2_{summary_stem(path)}"
     if mode == MASK_LABELS_FULL:
@@ -470,24 +550,32 @@ def summary_slot(path: Path, mask_labels: str | None = None) -> str:
     return f"{slot}_{mode}"
 
 
-def default_summary_dir(image: Path, mask_labels: str | None = None) -> Path:
+def default_summary_dir(
+    image: Path,
+    mask_labels: str | None = None,
+    *,
+    attack_steps: int | None = None,
+) -> Path:
     """One still, one directory. Never the flat ``results/`` folder.
 
     ``full`` stays ``results/b2_<T>/``. ``ablate_noskin`` uses
     ``results/b2_<T>_ablate_noskin/``. ``ablate_onlyskin`` uses
     ``results/b2_<T>_ablate_onlyskin/``. An ablation does not overwrite
-    the product slot or the other ablation slot.
+    the product slot or the other ablation slot. ``--attack-steps 900``
+    uses ``results/b2_<T>_steps900/`` and ``600`` uses ``_steps600/``.
     """
-    return RESULTS_DIR / summary_slot(image, mask_labels)
+    return RESULTS_DIR / summary_slot(image, mask_labels, attack_steps=attack_steps)
 
 
 def resolve_summary_dir(
     flag: str | None,
     image: Path,
     mask_labels: str | None = None,
+    *,
+    attack_steps: int | None = None,
 ) -> Path:
     if flag is None:
-        return default_summary_dir(image, mask_labels)
+        return default_summary_dir(image, mask_labels, attack_steps=attack_steps)
     path = Path(flag).expanduser()
     if not path.is_absolute():
         path = REPO_ROOT / path
@@ -554,6 +642,10 @@ def foreign_summary_dirs(image: Path, mask_labels: str | None) -> set[Path]:
             protected.add((RESULTS_DIR / name).resolve())
         other_flag = None if other == MASK_LABELS_FULL else other
         protected.add(default_summary_dir(image, other_flag).resolve())
+    for steps in STEPS_RECIPE_STEPS:
+        protected.add(default_summary_dir(image, attack_steps=steps).resolve())
+        for stem in _FROZEN_STILL_STEMS:
+            protected.add((RESULTS_DIR / f"b2_{stem}_steps{steps}").resolve())
     return protected
 
 
@@ -611,6 +703,52 @@ def assert_ablation_slot(directory: Path, image: Path, mask_labels: str | None) 
     )
 
 
+def _steps_directory_forbidden(directory: Path, expected: Path) -> bool:
+    """True when ``directory`` is not this still's ``_stepsN`` slot.
+
+    Product B2-a, softskin, noskin, onlyskin, makeup_xfer, the other
+    still, and any other path are refused. The recipe writes one
+    directory.
+    """
+    return directory.resolve() != expected.resolve()
+
+
+def assert_steps_recipe_slot(
+    directory: Path,
+    image: Path,
+    mask_labels: str | None,
+    attack_steps: int | None,
+) -> None:
+    """Keep a 600/900-step run in ``results/b2_<T>_stepsN/`` only.
+
+    The 300-step default is unchanged. A comparison count refuses product
+    B2-a directories and the softskin, noskin, onlyskin, and makeup_xfer
+    slots, including when ``--ablate`` names one of those modes.
+
+    Raises:
+        SummarySlotError: the directory is not this still's steps slot,
+            or the run also asks for a non-full in-M mode.
+    """
+    steps = resolve_attack_steps(attack_steps)
+    if steps == b1.ATTACK_STEPS:
+        return
+    mode, _mapping = resolve_mask_labels(mask_labels)
+    expected = default_summary_dir(image, attack_steps=steps).resolve()
+    owned = (
+        f"results/b2_celeba_T0_steps{steps}/ and "
+        f"results/b2_lfw_T0_steps{steps}/"
+    )
+    if mode != MASK_LABELS_FULL or _steps_directory_forbidden(directory, expected):
+        raise SummarySlotError(
+            f"--attack-steps {steps} refuses {directory}. "
+            f"It writes only {owned} for that still. "
+            "Product B2-a directories and the softskin, noskin, onlyskin, "
+            "and makeup_xfer slots stay put. "
+            "The recipe does not change DEFAULT_PARSING_LABELS, ε, or the "
+            "softskin dual budget, and it does not pass --launch by itself."
+        )
+
+
 def output_name_for(path: Path) -> str:
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", path.stem).strip("._") or "T"
     return f"{OUTPUT_PREFIX}_{stem}"
@@ -629,7 +767,10 @@ def b2_aegis_kwargs(plan: b1.AttackPlan) -> dict:
     kwargs["surrogate_keys"] = None
     kwargs["targeted_features"] = b1.TARGET_FEATURES
     kwargs["adv_attack"] = b1.ADV_ATTACK
-    kwargs["attack_steps"] = b1.ATTACK_STEPS
+    if plan.attack_steps in STEPS_RECIPE_STEPS:
+        kwargs["attack_steps"] = plan.attack_steps
+    else:
+        kwargs["attack_steps"] = b1.ATTACK_STEPS
     kwargs["embedder_name"] = b1.EMBEDDER
     kwargs["epsilons"] = [b1.EPSILON]
     return kwargs
@@ -649,13 +790,22 @@ def expected_outputs(plan: b1.AttackPlan, aegis_root: Path) -> tuple[Path, Path]
     return avatar, render
 
 
-def user_command(image: Path, parsing: Path, mask_labels: str | None = None) -> str:
+def user_command(
+    image: Path,
+    parsing: Path,
+    mask_labels: str | None = None,
+    *,
+    attack_steps: int | None = None,
+) -> str:
     """The GPU command. The default CLI does not pass ``--launch``.
 
     ``full`` omits ``--ablate``. A narrower in-M mode includes the
     canonical name and still does not turn launch on by itself.
+    The 300-step default omits ``--attack-steps``. A comparison count records
+    the flag and still does not turn launch on by itself.
     """
     mode, _mapping = resolve_mask_labels(mask_labels)
+    steps = resolve_attack_steps(attack_steps)
     parts = [
         "python src/baselines/b2_makeup_impersonation.py",
         f"--impersonation-image {image}",
@@ -663,6 +813,8 @@ def user_command(image: Path, parsing: Path, mask_labels: str | None = None) -> 
     ]
     if mode != MASK_LABELS_FULL:
         parts.append(f"--ablate {mode}")
+    if steps != b1.ATTACK_STEPS:
+        parts.append(f"--attack-steps {steps}")
     parts.append("--arm-hook --launch")
     return " ".join(parts)
 
@@ -1069,6 +1221,8 @@ def worker_command(
     ]
     if mode != MASK_LABELS_FULL:
         command.extend(["--ablate", mode])
+    if plan.attack_steps in STEPS_RECIPE_STEPS:
+        command.extend(["--attack-steps", str(plan.attack_steps)])
     return command
 
 
@@ -1170,7 +1324,12 @@ def _empty_metrics(
     avatar_out, render_out = expected_outputs(plan, aegis_root)
     labels = mask_label_fields(mask_labels, mask_labels_requested)
     return {
-        "command": user_command(plan.impersonation_image, parsing, labels["mask_labels"]),
+        "command": user_command(
+            plan.impersonation_image,
+            parsing,
+            labels["mask_labels"],
+            attack_steps=plan.attack_steps,
+        ),
         "command_attempted": False,
         "return_code": None,
         "log_tail": "",
@@ -1199,7 +1358,11 @@ def _empty_metrics(
         "parsing_present": b1.image_ready(parsing),
         "corpus": b1.corpus_for(plan.impersonation_image),
         "smoke_target": b1.smoke_target_for(plan.impersonation_image),
-        "summary_slot": summary_slot(plan.impersonation_image, labels["mask_labels"]),
+        "summary_slot": summary_slot(
+            plan.impersonation_image,
+            labels["mask_labels"],
+            attack_steps=plan.attack_steps,
+        ),
         "mask_labels": labels["mask_labels"],
         "mask_labels_requested": labels["mask_labels_requested"],
         "parsing_label_ids": labels["parsing_label_ids"],
@@ -1255,7 +1418,12 @@ def _payload(plan, parsing, summary_dir, *, status, note, metrics, pipeline_ok=F
         "subject": plan.subject,
         "corpus": b1.corpus_for(plan.impersonation_image),
         "smoke_target": b1.smoke_target_for(plan.impersonation_image),
-        "summary_slot": summary_slot(plan.impersonation_image, mode),
+        "summary_slot": summary_slot(
+            plan.impersonation_image,
+            mode,
+            attack_steps=plan.attack_steps,
+        ),
+        "attack_steps": plan.attack_steps,
         "mask_labels": mode,
         "parsing_label_ids": list(
             (metrics or {}).get("parsing_label_ids") or parsing_label_ids(mode)
@@ -1442,16 +1610,29 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
     image_text = resolve_impersonation_image(args.impersonation_image)
     parsing = resolve_parsing_path(args.parsing)
     try:
+        attack_steps = resolve_attack_steps(args.attack_steps)
+    except AttackStepsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
         mode, _label_map = resolve_mask_labels(args.ablate)
     except MaskLabelError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     requested = MASK_LABELS_FULL if args.ablate is None else str(args.ablate)
     image_path = Path(image_text)
-    summary_dir = resolve_summary_dir(args.summary_dir, image_path, mode)
+    summary_dir = resolve_summary_dir(
+        args.summary_dir,
+        image_path,
+        mode,
+        attack_steps=attack_steps,
+    )
     try:
         assert_summary_slot(summary_dir)
-        assert_ablation_slot(summary_dir, image_path, mode)
+        if attack_steps == b1.ATTACK_STEPS:
+            assert_ablation_slot(summary_dir, image_path, mode)
+        else:
+            assert_steps_recipe_slot(summary_dir, image_path, mode, attack_steps)
     except SummarySlotError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -1461,7 +1642,7 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
 
         assert_subject_306(args.subject)
     except ValueError as exc:
-        plan = b1.build_plan(image_text, launch=False)
+        plan = apply_attack_steps(b1.build_plan(image_text, launch=False), attack_steps)
         metrics = _empty_metrics(
             plan,
             parsing,
@@ -1473,7 +1654,7 @@ def execute(argv: list[str] | None = None, *, runner=subprocess.run) -> int:
         )
         return _refuse(summary_dir, plan, parsing, metrics, "refused_subject", str(exc))
 
-    plan = b1.build_plan(image_text, launch=False)
+    plan = apply_attack_steps(b1.build_plan(image_text, launch=False), attack_steps)
     aegis_root = Path(args.aegis_root).expanduser()
     metrics = _empty_metrics(
         plan,
@@ -1932,7 +2113,14 @@ def worker_main(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     image = resolve_impersonation_image(args.impersonation_image)
-    plan = b1.build_plan(image, launch=True)
+    try:
+        plan = apply_attack_steps(
+            b1.build_plan(image, launch=True),
+            args.attack_steps,
+        )
+    except AttackStepsError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     aegis_root = Path(args.aegis_root).expanduser()
     config = hook_config_path(aegis_root)
     out = Path(args.summary_out).expanduser()
@@ -2021,6 +2209,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--attack-steps",
+        type=_attack_steps_arg,
+        default=b1.ATTACK_STEPS,
+        help=(
+            "PGD steps on the B1 Foolbox path. "
+            f"Default: {b1.ATTACK_STEPS}, which keeps results/b2_<T>/. "
+            "Comparison runs allow only 600 and 900. "
+            "900 writes only results/b2_celeba_T0_steps900/ "
+            "(later results/b2_lfw_T0_steps900/). "
+            "600 writes results/b2_<T>_steps600/. "
+            "Those recipes refuse product B2-a directories and the "
+            "softskin, noskin, onlyskin, and makeup_xfer slots. "
+            "Does not change DEFAULT_PARSING_LABELS, ε, or the softskin "
+            "dual budget, and does not add --launch."
+        ),
+    )
+    parser.add_argument(
         "--arm-hook",
         action="store_true",
         help=(
@@ -2082,6 +2287,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "softskin defaults to results/b2_<T>_softskin/ "
             "(results/b2_celeba_T0_softskin/ and results/b2_lfw_T0_softskin/) "
             "and refuses product B2 directories and other ablation slots. "
+            "--attack-steps 900 defaults to results/b2_<T>_steps900/ "
+            "(results/b2_celeba_T0_steps900/ and results/b2_lfw_T0_steps900/) "
+            "and refuses product, softskin, noskin, onlyskin, and makeup_xfer slots. "
+            "--attack-steps 600 defaults to results/b2_<T>_steps600/. "
             "Each mode refuses the other modes' slots. "
             "The flat results/ directory is refused."
         ),
