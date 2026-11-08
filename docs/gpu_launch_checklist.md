@@ -70,6 +70,12 @@ Wiring may merge. This section does not start a GPU run and does not add `--laun
 | `celeba_T0.jpg` (first) | `results/b2_celeba_T0/summary.json` and `summary.csv` |
 | `lfw_T0.jpg` (later) | `results/b2_lfw_T0/summary.json` and `summary.csv` |
 
+In-M ablation does not change the makeup definition. `DEFAULT_PARSING_LABELS` stays the product default: label 1 skin/cheek, 2/3 brow, 4/5 eye, 12/13 lip. Nose, hair, ears, and neck stay out of that default. `--ablate full` (omit the flag; `--mask-labels default` is the same name) writes the product directory above. The locked ablation is `--ablate ablate_noskin` (`--mask-labels ablate_noskin` is the same switch). It drops label 1 and keeps {2, 3, 4, 5, 12, 13}. Those runs write `results/b2_celeba_T0_ablate_noskin/` and later `results/b2_lfw_T0_ablate_noskin/`. They must not overwrite `results/b2_celeba_T0/` or `results/b2_lfw_T0/`. Each ablation directory is its own `<exp_id>` for gate 3.
+
+`--arm-hook` on the bound 306 ply does not sample Gaussians. The armed summary stays `dc_mask_lift=pending-get-xyz` with an image-domain `mask_shape`. B2-a/b recorded `mask_shape=[540, 960]` and about 10.22% of those pixels inside M. The `(N,)` lift is later: `ensure_dc_mask` calls `sample_image_mask` when `get_xyz` is available, at launch, and only then sets `dc_mask_lift=projected-means`. That step logs one line, `mask (N,) nz=… frac=…`, and the same `dc_mask_shape`, `dc_mask_nonzero`, and `dc_mask_fraction` land in `summary.json`. Do not describe the armed state as already `projected-means`. An older smoke print of an `(N,)` fraction is not the B2-a/b armed record; those runs did not print one.
+
+The default command still has no `--launch`. Dry coverage is `python src/baselines/b2_makeup_impersonation.py` for `full`, and the same command with `--ablate ablate_noskin` for the ablation. Add `--arm-hook --launch` only after gates 1–3 and mentor gate 4.
+
 The wiring record in that directory has `pipeline_ok` false and null measurements. It is not a finished attack. The authorized run of that same still updates the same directory. A second finished run needs a new directory.
 
 **Post-run gate** (bob freeze). Judge this on the summary after the run. The wiring record leaves these empty and is not a pass. Do not fill them with invented GPU numbers.

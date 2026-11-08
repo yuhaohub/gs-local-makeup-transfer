@@ -37,7 +37,9 @@ from makeup.aegis_pgd_hook import (
     clear_hook_state,
     dc_hook_from_parsing,
     epsilon_only_adaptive_step,
+    dc_mask_support_stats,
     ensure_dc_mask,
+    last_dc_mask_support,
     load_hook_from_config,
     epsilon_only_foolbox_project,
     in_loop_leakage_report,
@@ -369,6 +371,47 @@ class AegisPgdHookTest(unittest.TestCase):
         self.assertTrue(np.allclose(foolbox[0, 0, 0], -0.1))
         self.assertTrue(np.all(foolbox[0, 1] == 0.0))
         self.assertEqual(outside_support_max_abs(projected, hook.mask, "dc"), 0.0)
+
+    def test_ensure_dc_mask_logs_materialized_n_support(self) -> None:
+        import contextlib
+        import io
+
+        height, width = 8, 8
+        labels = np.zeros((height, width), dtype=np.int64)
+        labels[1, 2] = 12
+        labels[4, 4] = 10
+        lip, nose = means_at_pixels(
+            [1, 4], [2, 4], height, width, radius=1.0, fovy_deg=20.0
+        )
+        pending = dc_hook_from_parsing(labels, 0.1, None)
+        self.assertEqual(pending.dc_mask_lift, "pending-get-xyz")
+        self.assertEqual(tuple(np.asarray(pending.mask).shape), (height, width))
+        clear_hook_state()
+        self.assertIsNone(last_dc_mask_support())
+
+        class _Gaussians:
+            def __init__(self, xyz):
+                self.get_xyz = np.asarray(xyz, dtype=np.float64)
+
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            lifted = ensure_dc_mask(pending, _Gaussians(np.vstack([lip, nose])))
+        text = buffer.getvalue().strip()
+        stats = last_dc_mask_support()
+        self.assertEqual(lifted.dc_mask_lift, "projected-means")
+        self.assertEqual(stats, dc_mask_support_stats(lifted.mask))
+        self.assertEqual(stats["dc_mask_shape"], [2])
+        self.assertEqual(stats["dc_mask_nonzero"], 1)
+        self.assertAlmostEqual(stats["dc_mask_fraction"], 0.5)
+        self.assertEqual(text, "mask (2,) nz=1 frac=0.5")
+        self.assertEqual(text, stats["dc_mask_support_line"])
+        with self.assertRaises(ValueError):
+            dc_mask_support_stats(pending.image_mask)
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet):
+            again = ensure_dc_mask(lifted, None)
+        self.assertIs(again, lifted)
+        self.assertEqual(quiet.getvalue(), "")
 
     def test_bound_ply_samples_get_xyz_before_the_dc_step(self) -> None:
         height, width = 8, 8

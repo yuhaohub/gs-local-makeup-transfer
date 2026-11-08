@@ -132,6 +132,18 @@ class PathsAndHyperparamsTest(unittest.TestCase):
         self.assertNotEqual(celeba, lfw)
         self.assertNotEqual(celeba, b2.RESULTS_DIR)
         self.assertEqual(b2.summary_slot(Path("celeba_T0.jpg")), "b2_celeba_T0")
+        self.assertEqual(
+            b2.default_summary_dir(Path(b2.DEFAULT_IMPERSONATION_IMAGE), "ablate_noskin"),
+            b2.RESULTS_DIR / "b2_celeba_T0_ablate_noskin",
+        )
+        self.assertEqual(
+            b2.default_summary_dir(Path(b2.LFW_IMPERSONATION_IMAGE), "ablate_noskin"),
+            b2.RESULTS_DIR / "b2_lfw_T0_ablate_noskin",
+        )
+        self.assertNotEqual(
+            b2.default_summary_dir(Path(b2.DEFAULT_IMPERSONATION_IMAGE), "ablate_noskin"),
+            celeba,
+        )
 
     def test_flat_results_and_historical_names_are_refused(self) -> None:
         with self.assertRaises(b2.SummarySlotError):
@@ -191,6 +203,7 @@ class PathsAndHyperparamsTest(unittest.TestCase):
         self.assertFalse(args.adaptive_epsilon)
         self.assertFalse(args.select_regions)
         self.assertIsNone(args.summary_dir)
+        self.assertIsNone(args.ablate)
         self.assertEqual(args.subject, "306")
         flagged = b2.parse_args(
             [
@@ -314,6 +327,9 @@ class CliRefusalTest(unittest.TestCase):
         self.assertFalse(payload["pipeline_ok"])
         self.assertEqual(payload["status"], "awaiting_target")
         self.assertEqual(payload["summary_slot"], "b2_celeba_T0")
+        self.assertEqual(payload["mask_labels"], "full")
+        self.assertEqual(payload["parsing_label_ids"], [1, 2, 3, 4, 5, 12, 13])
+        self.assertFalse(payload["ablation_changes_default_m"])
         self.assertEqual(payload["parsing_path"], b2.DEFAULT_PARSING)
         metrics = payload["metrics"]
         self.assertIsNone(metrics["cos_adv_source"])
@@ -336,7 +352,9 @@ class CliRefusalTest(unittest.TestCase):
         self.assertEqual(metrics["criterion"]["foolbox_criterion"], "TargetedMisclassification")
         self.assertTrue(metrics["criterion"]["makeup_hook"])
         self.assertIn("--arm-hook --launch", metrics["command"])
+        self.assertNotIn("--ablate", metrics["command"])
         self.assertNotIn("masks/", metrics["parsing_path"])
+        self.assertIn("mask_labels", csv_text)
         self.assertIn("outside_m_abs_delta", csv_text)
         self.assertIn("kind=dc", payload["note"])
 
@@ -723,6 +741,338 @@ class CliRefusalTest(unittest.TestCase):
         self.assertFalse(payload["metrics"]["makeup_hook_armed"])
 
 
+class AblateNoskinTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        clear_hook_state()
+        os.environ.pop(HOOK_CONFIG_ENV, None)
+        os.environ.pop(b2.IMAGE_ENV, None)
+        os.environ.pop(b2.PARSING_ENV, None)
+
+    def test_default_map_is_unchanged_and_noskin_drops_only_label_1(self) -> None:
+        from makeup.mask import DEFAULT_PARSING_LABELS, MakeupRegion
+
+        before = dict(DEFAULT_PARSING_LABELS)
+        mode, mapping = b2.resolve_mask_labels(None)
+        self.assertEqual(mode, "full")
+        self.assertIsNone(mapping)
+        mode, mapping = b2.resolve_mask_labels("full")
+        self.assertEqual(mode, "full")
+        self.assertIsNone(mapping)
+        mode, mapping = b2.resolve_mask_labels("default")
+        self.assertEqual(mode, "full")
+        self.assertIsNone(mapping)
+        self.assertEqual(dict(DEFAULT_PARSING_LABELS), before)
+        self.assertEqual(set(DEFAULT_PARSING_LABELS), {1, 2, 3, 4, 5, 12, 13})
+        self.assertEqual(DEFAULT_PARSING_LABELS[1], MakeupRegion.CHEEK)
+        for excluded in (0, 6, 7, 8, 10, 11, 14, 17):
+            self.assertNotIn(excluded, DEFAULT_PARSING_LABELS)
+
+        mode, mapping = b2.resolve_mask_labels("ablate_noskin")
+        self.assertEqual(mode, "ablate_noskin")
+        self.assertEqual(set(mapping), {2, 3, 4, 5, 12, 13})
+        self.assertNotIn(1, mapping)
+        self.assertTrue(
+            all(region != MakeupRegion.CHEEK for region in mapping.values())
+        )
+        self.assertEqual(dict(DEFAULT_PARSING_LABELS), before)
+        self.assertIn(1, DEFAULT_PARSING_LABELS)
+        for rejected in ("no_skin", "lips_eyes_brows", "makeup_points", "nose"):
+            with self.assertRaises(b2.MaskLabelError):
+                b2.resolve_mask_labels(rejected)
+
+    def test_hook_default_keeps_skin_and_noskin_drops_it(self) -> None:
+        labels = _labels()
+        full = dc_hook_from_parsing(labels, 0.1, subject="306")
+        same = dc_hook_from_parsing(labels, 0.1, subject="306", label_map=None)
+        _mode, mapping = b2.resolve_mask_labels("ablate_noskin")
+        dropped = dc_hook_from_parsing(labels, 0.1, subject="306", label_map=mapping)
+        full_u = np.asarray(full.mask.union())
+        drop_u = np.asarray(dropped.mask.union())
+        self.assertTrue(np.array_equal(np.asarray(same.mask.union()), full_u))
+        self.assertEqual(full_u[6], 1.0)
+        self.assertEqual(drop_u[6], 0.0)
+        self.assertTrue(np.array_equal(full_u[:6], np.ones(6)))
+        self.assertTrue(np.array_equal(drop_u[:6], np.ones(6)))
+        self.assertTrue(np.array_equal(full_u[7:], np.zeros(3)))
+        self.assertTrue(np.array_equal(drop_u[7:], np.zeros(3)))
+        self.assertEqual(dropped.kind, "dc")
+
+        grid = np.zeros((2, 4), dtype=np.int64)
+        grid[0, 0] = 1
+        grid[0, 1] = 12
+        grid[0, 2] = 10
+        full_image = dc_hook_from_parsing(grid, 0.1, means=None)
+        narrow_image = dc_hook_from_parsing(grid, 0.1, means=None, label_map=mapping)
+        self.assertEqual(np.asarray(full_image.image_mask)[0, 0], 1.0)
+        self.assertEqual(np.asarray(narrow_image.image_mask)[0, 0], 0.0)
+        self.assertEqual(np.asarray(narrow_image.image_mask)[0, 1], 1.0)
+        self.assertEqual(np.asarray(narrow_image.image_mask)[0, 2], 0.0)
+        self.assertEqual(full_image.dc_mask_lift, "pending-get-xyz")
+
+    def test_summary_slot_uses_ablate_noskin_suffix_and_spares_the_product_dir(self) -> None:
+        image = Path(b2.DEFAULT_IMPERSONATION_IMAGE)
+        self.assertEqual(b2.summary_slot(image), "b2_celeba_T0")
+        self.assertEqual(b2.summary_slot(image, "ablate_noskin"), "b2_celeba_T0_ablate_noskin")
+        self.assertEqual(
+            b2.user_command(image, Path(b2.DEFAULT_PARSING)),
+            "python src/baselines/b2_makeup_impersonation.py "
+            "--impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg "
+            "--parsing /root/autodl-fs/gs-assets/parsing/306.npy "
+            "--arm-hook --launch",
+        )
+        noskin_command = b2.user_command(image, Path(b2.DEFAULT_PARSING), "ablate_noskin")
+        self.assertIn("--ablate ablate_noskin --arm-hook --launch", noskin_command)
+        plan = b1.build_plan(b2.DEFAULT_IMPERSONATION_IMAGE, launch=True)
+        default_worker = b2.worker_command(
+            plan,
+            Path(b2.DEFAULT_PARSING),
+            Path("/tmp/b2-worker.json"),
+            b1.AEGIS_ROOT,
+        )
+        self.assertNotIn("--ablate", default_worker)
+        noskin_worker = b2.worker_command(
+            plan,
+            Path(b2.DEFAULT_PARSING),
+            Path("/tmp/b2-worker.json"),
+            b1.AEGIS_ROOT,
+            "ablate_noskin",
+        )
+        self.assertEqual(noskin_worker[noskin_worker.index("--ablate") + 1], "ablate_noskin")
+
+        product = b2.RESULTS_DIR / "b2_celeba_T0"
+        json_path = product / "summary.json"
+        csv_path = product / "summary.csv"
+        before_json = json_path.read_bytes()
+        before_csv = csv_path.read_bytes()
+        code = b2.main(
+            ["--ablate", "ablate_noskin", "--summary-dir", str(product)],
+            runner=_boom,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(json_path.read_bytes(), before_json)
+        self.assertEqual(csv_path.read_bytes(), before_csv)
+        self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_ablate_noskin").exists())
+        with self.assertRaises(SystemExit) as caught:
+            b2.parse_args(["--ablate", "no_skin"])
+        self.assertEqual(caught.exception.code, 2)
+
+    def test_dry_run_writes_the_ablation_slot_and_leaves_full_m_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                code = b2.main(["--mask-labels", "ablate_noskin"], runner=_boom)
+                payload = json.loads(
+                    (root / "b2_celeba_T0_ablate_noskin" / "summary.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertFalse((root / "b2_celeba_T0").exists())
+            self.assertEqual(code, 0)
+            self.assertFalse(payload["metrics"]["command_attempted"])
+            self.assertFalse(payload["pipeline_ok"])
+            self.assertEqual(payload["summary_slot"], "b2_celeba_T0_ablate_noskin")
+            self.assertEqual(payload["mask_labels"], "ablate_noskin")
+            self.assertEqual(payload["metrics"]["mask_labels_requested"], "ablate_noskin")
+            self.assertEqual(payload["parsing_label_ids"], [2, 3, 4, 5, 12, 13])
+            self.assertFalse(payload["ablation_changes_default_m"])
+            self.assertIn("--ablate ablate_noskin", payload["metrics"]["command"])
+            self.assertIn("--arm-hook --launch", payload["metrics"]["command"])
+            self.assertIn("pending-get-xyz", payload["note"])
+            self.assertIn("ensure_dc_mask", payload["note"])
+            self.assertIn("mask (N,) nz=", payload["note"])
+            self.assertIsNone(payload["metrics"]["dc_mask_support_line"])
+            self.assertNotIn("2.31%", payload["note"])
+            self.assertNotIn("23.2", payload["note"])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(b2, "RESULTS_DIR", root):
+                code = b2.main([], runner=_boom)
+                self.assertTrue((root / "b2_celeba_T0" / "summary.json").is_file())
+                self.assertFalse((root / "b2_celeba_T0_ablate_noskin").exists())
+            self.assertEqual(code, 0)
+
+    def test_arm_hook_noskin_excludes_label_1_and_does_not_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            aegis = root / "AEGIS"
+            _excerpt_tree(aegis)
+            code = b2.main(
+                [
+                    "--arm-hook",
+                    "--ablate",
+                    "ablate_noskin",
+                    "--parsing",
+                    str(parsing),
+                    "--aegis-root",
+                    str(aegis),
+                    "--summary-dir",
+                    str(root / "out"),
+                ],
+                runner=_boom,
+            )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            weight = np.load(aegis / ".gs_makeup_mask.npy")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["status"], "hook_armed")
+        self.assertEqual(payload["mask_labels"], "ablate_noskin")
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0_ablate_noskin")
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertFalse(payload["pipeline_ok"])
+        self.assertEqual(float(weight[6]), 0.0)
+        self.assertEqual(float(weight[0]), 1.0)
+        self.assertEqual([float(value) for value in weight[7:]], [0.0, 0.0, 0.0])
+        self.assertEqual(payload["metrics"]["hook"]["mask_labels"], "ablate_noskin")
+        self.assertEqual(payload["metrics"]["hook"]["parsing_label_ids"], [2, 3, 4, 5, 12, 13])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            aegis = root / "AEGIS"
+            _excerpt_tree(aegis)
+            code = b2.main(
+                [
+                    "--arm-hook",
+                    "--parsing",
+                    str(parsing),
+                    "--aegis-root",
+                    str(aegis),
+                    "--summary-dir",
+                    str(root / "out"),
+                ],
+                runner=_boom,
+            )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            weight = np.load(aegis / ".gs_makeup_mask.npy")
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["mask_labels"], "full")
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0")
+        self.assertEqual(payload["parsing_label_ids"], [1, 2, 3, 4, 5, 12, 13])
+        self.assertNotIn("--ablate", payload["metrics"]["command"])
+        self.assertEqual(float(weight[6]), 1.0)
+        self.assertEqual(payload["metrics"]["hook"]["label_map"], "DEFAULT_PARSING_LABELS")
+
+    def test_arm_hook_on_image_parsing_stays_pending_get_xyz(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            labels = np.zeros((4, 6), dtype=np.int64)
+            labels[0, 0] = 12
+            labels[1, 1] = 1
+            labels[2, 2] = 10
+            parsing = root / "parsing" / "306.npy"
+            parsing.parent.mkdir(parents=True)
+            np.save(parsing, labels)
+            code = b2.main(
+                [
+                    "--arm-hook",
+                    "--parsing",
+                    str(parsing),
+                    "--aegis-root",
+                    str(root / "no-aegis"),
+                    "--summary-dir",
+                    str(root / "out"),
+                ],
+                runner=_boom,
+            )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            product = b2.RESULTS_DIR / "b2_celeba_T0" / "summary.json"
+            self.assertTrue(product.is_file())
+        self.assertEqual(code, 0)
+        hook = payload["metrics"]["hook"]
+        self.assertEqual(hook["dc_mask_lift"], "pending-get-xyz")
+        self.assertEqual(hook["mask_shape"], [4, 6])
+        self.assertEqual(hook["image_mask_nonzero"], 2)
+        self.assertAlmostEqual(hook["image_mask_fraction"], 2 / 24)
+        self.assertIsNone(payload["metrics"]["dc_mask_support_line"])
+        self.assertIsNone(payload["metrics"]["dc_mask_shape"])
+        self.assertFalse(payload["metrics"]["command_attempted"])
+        self.assertIn("pending-get-xyz", hook["layout"])
+        self.assertNotIn("projected-means", hook["dc_mask_lift"])
+
+    def test_launch_summary_records_materialized_n_support(self) -> None:
+        def runner(command, **kwargs):
+            out = Path(command[command.index("--summary-out") + 1])
+            out.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "cos_adv_source": 0.2,
+                        "cos_adv_target": 0.8,
+                        "outside_m_abs_delta": 0.0,
+                        "dc_mask_shape": [89021],
+                        "dc_mask_nonzero": 178,
+                        "dc_mask_fraction": 178 / 89021,
+                        "dc_mask_support_line": "mask (89021,) nz=178 frac=0.001999",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            class Proc:
+                returncode = 0
+                stdout = "mask (89021,) nz=178 frac=0.001999\n"
+                stderr = ""
+
+            return Proc()
+
+        def fake_install(hook, aegis_root):
+            config = Path(aegis_root) / ".gs_makeup_hook.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(
+                json.dumps(
+                    {
+                        "kind": "dc",
+                        "subject": "306",
+                        "epsilon": 0.1,
+                        "dc_mask_lift": "pending-get-xyz",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            return {"status": "patched", "armed": True, "config": str(config), "note": "test"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parsing = _write_parsing(root)
+            image = root / "celeba_T0.jpg"
+            image.write_bytes(b"still")
+            with (
+                patch.object(b2, "install_b2_hook", side_effect=fake_install),
+                patch.object(b2, "collect_b2_blockers", return_value=[]),
+            ):
+                code = b2.main(
+                    [
+                        "--arm-hook",
+                        "--launch",
+                        "--ablate",
+                        "ablate_noskin",
+                        "--impersonation-image",
+                        str(image),
+                        "--parsing",
+                        str(parsing),
+                        "--aegis-root",
+                        str(root / "AEGIS"),
+                        "--summary-dir",
+                        str(root / "out"),
+                    ],
+                    runner=runner,
+                )
+            payload = json.loads((root / "out" / "summary.json").read_text(encoding="utf-8"))
+            csv_text = (root / "out" / "summary.csv").read_text(encoding="utf-8")
+            self.assertFalse((b2.RESULTS_DIR / "b2_celeba_T0_ablate_noskin").exists())
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["summary_slot"], "b2_celeba_T0_ablate_noskin")
+        metrics = payload["metrics"]
+        self.assertEqual(metrics["dc_mask_shape"], [89021])
+        self.assertEqual(metrics["dc_mask_nonzero"], 178)
+        self.assertAlmostEqual(metrics["dc_mask_fraction"], 178 / 89021)
+        self.assertEqual(metrics["dc_mask_support_line"], "mask (89021,) nz=178 frac=0.001999")
+        self.assertEqual(metrics["hook"]["dc_mask_lift"], "projected-means")
+        self.assertEqual(metrics["hook"]["mask_shape"], [89021])
+        self.assertIn("mask (89021,) nz=178 frac=0.001999", csv_text)
+
+
 class DocsTest(unittest.TestCase):
     def test_readme_documents_b2_cli_without_default_launch(self) -> None:
         text = (_REPO / "README.md").read_text(encoding="utf-8")
@@ -738,6 +1088,17 @@ class DocsTest(unittest.TestCase):
         self.assertIn("/root/autodl-fs/gs-assets/parsing/306.npy", section)
         self.assertIn("results/b2_celeba_T0/", section)
         self.assertIn("results/b2_lfw_T0/", section)
+        self.assertIn("results/b2_celeba_T0_ablate_noskin/", section)
+        self.assertIn("--ablate ablate_noskin", section)
+        self.assertIn("DEFAULT_PARSING_LABELS", section)
+        self.assertIn("pending-get-xyz", section)
+        self.assertIn("ensure_dc_mask", section)
+        self.assertIn("[540, 960]", section)
+        self.assertIn("10.22%", section)
+        self.assertIn("mask (N,) nz=", section)
+        self.assertNotIn("2.31%", section)
+        self.assertNotIn("23.2", section)
+        self.assertNotIn("no_skin", section)
         self.assertIn("outside_m_abs_delta", section)
         self.assertIn("cos(adv, source) ↓ relative to goal", section)
         self.assertIn("cos(adv, T) ↑", section)
@@ -769,6 +1130,16 @@ class DocsTest(unittest.TestCase):
         self.assertIn("outside_m_abs_delta", text)
         self.assertIn("results/b2_celeba_T0/", text)
         self.assertIn("results/b2_lfw_T0/", text)
+        self.assertIn("results/b2_celeba_T0_ablate_noskin/", text)
+        self.assertIn("--ablate ablate_noskin", text)
+        self.assertIn("DEFAULT_PARSING_LABELS", text)
+        self.assertIn("pending-get-xyz", text)
+        self.assertIn("ensure_dc_mask", text)
+        self.assertIn("[540, 960]", text)
+        self.assertIn("10.22%", text)
+        self.assertIn("mask (N,) nz=", text)
+        self.assertNotIn("2.31%", text)
+        self.assertNotIn("23.2", text)
         self.assertIn("parsing/306.npy", text)
 
 

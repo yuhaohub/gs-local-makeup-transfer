@@ -59,6 +59,9 @@ MODEL_RELATIVE = Path("src/aegis/core/model.py")
 CONFIG_NAME = ".gs_makeup_hook.json"
 MASK_NAME = ".gs_makeup_mask.npy"
 HOOK_CONFIG_ENV = "GS_MAKEUP_HOOK_CONFIG"
+# Set when ``ensure_dc_mask`` materializes an ``(N,)`` mask. Arm time on
+# the bound 306 ply does not set this: that state stays ``pending-get-xyz``.
+_LAST_DC_MASK_SUPPORT: Optional[dict] = None
 TAIL_BEGIN = "# BEGIN gs-local-makeup-transfer makeup support hook"
 TAIL_END = "# END gs-local-makeup-transfer makeup support hook"
 
@@ -176,10 +179,11 @@ _CONFIG_CACHE_HOOK: Optional["MakeupPgdHook"] = None
 
 def clear_hook_state() -> None:
     """Drop the in-process hook and the config cache."""
-    global _ARMED, _CONFIG_CACHE_KEY, _CONFIG_CACHE_HOOK
+    global _ARMED, _CONFIG_CACHE_KEY, _CONFIG_CACHE_HOOK, _LAST_DC_MASK_SUPPORT
     _ARMED = None
     _CONFIG_CACHE_KEY = None
     _CONFIG_CACHE_HOOK = None
+    _LAST_DC_MASK_SUPPORT = None
 
 
 def _repo_root() -> Path:
@@ -917,6 +921,47 @@ def _attacked_means(gaussians, attacked_mask):
     return points[mask]
 
 
+def dc_mask_support_stats(mask) -> dict:
+    """Nonzero count and fraction for one materialized ``(N,)`` DC mask.
+
+    ``(H, W)`` is not this record. ``--arm-hook`` on the bound 306 ply
+    still holds that image mask (``dc_mask_lift=pending-get-xyz``).
+    """
+    np = require_numpy()
+    weight = np.asarray(as_mask_array(mask), dtype=np.float64)
+    if weight.ndim != 1:
+        raise ValueError(
+            "DC support stats are for a materialized (N,) mask, "
+            f"got shape {tuple(weight.shape)}"
+        )
+    total = int(weight.size)
+    nonzero = int(np.count_nonzero(weight > 0))
+    fraction = float(nonzero / total) if total else 0.0
+    line = f"mask ({total},) nz={nonzero} frac={fraction:.6g}"
+    return {
+        "dc_mask_shape": [total],
+        "dc_mask_nonzero": nonzero,
+        "dc_mask_fraction": fraction,
+        "dc_mask_support_line": line,
+    }
+
+
+def last_dc_mask_support() -> Optional[dict]:
+    """Stats from the latest ``ensure_dc_mask`` lift in this process."""
+    if _LAST_DC_MASK_SUPPORT is None:
+        return None
+    return dict(_LAST_DC_MASK_SUPPORT)
+
+
+def _log_dc_mask_support(mask) -> dict:
+    """Print one ``(N,)`` line and keep the stats for the summary."""
+    global _LAST_DC_MASK_SUPPORT
+    stats = dc_mask_support_stats(mask)
+    _LAST_DC_MASK_SUPPORT = dict(stats)
+    print(stats["dc_mask_support_line"], flush=True)
+    return stats
+
+
 def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> MakeupPgdHook:
     """Return ``hook`` with a per-Gaussian mask when the source is an image.
 
@@ -924,6 +969,10 @@ def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> M
     at ``gaussians.get_xyz`` with the frontal OrbitCamera. Without
     ``gaussians``, an already lifted ``(N,)`` mask is kept; an ``(H, W)``
     mask raises so it is not applied to a DC residual.
+
+    The new ``(N,)`` mask is logged once, as
+    ``mask (N,) nz=<count> frac=<fraction>``. That line is the lift, not
+    the armed ``pending-get-xyz`` image mask.
     """
     if hook.semantic_source != "image-parsing":
         return hook
@@ -947,7 +996,7 @@ def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> M
         radius=radius,
         fovy_deg=fovy,
     )
-    return MakeupPgdHook(
+    lifted_hook = MakeupPgdHook(
         lifted,
         hook.epsilon,
         kind="dc",
@@ -957,6 +1006,8 @@ def ensure_dc_mask(hook: MakeupPgdHook, gaussians=None, attacked_mask=None) -> M
         camera=hook.camera,
         dc_mask_lift="projected-means",
     )
+    _log_dc_mask_support(lifted_hook.mask)
+    return lifted_hook
 
 
 def dc_hook_from_parsing(
@@ -967,20 +1018,28 @@ def dc_hook_from_parsing(
     subject: Union[str, int] = "306",
     radius: Optional[float] = None,
     fovy_deg: Optional[float] = None,
+    label_map=None,
 ) -> MakeupPgdHook:
     """Arm a DC hook for B0-a from a parsing map.
 
     ``(N,)`` labels become a per-Gaussian mask directly. ``(H, W)`` labels
     go through ``SemanticMask.from_parsing`` (nose id 10 stays outside
     ``M``). When ``means`` is provided they are projected with the frontal
-    OrbitCamera and ``M`` is sampled to ``(N,)``. When ``means`` is omitted
-    the image mask is stored and ``mask_avatar`` samples ``get_xyz`` before
-    the first Foolbox step. The hook kind is always ``dc``.
+    OrbitCamera and ``M`` is sampled to ``(N,)``
+    (``dc_mask_lift=projected-means``). When ``means`` is omitted the image
+    mask is stored as ``dc_mask_lift=pending-get-xyz``. The bound NeRSemble
+    306 ply takes that path at ``--arm-hook``; ``ensure_dc_mask`` samples
+    ``get_xyz`` later and only then logs the ``(N,)`` support line. The
+    hook kind is always ``dc``.
+
+    ``label_map`` is forwarded to ``SemanticMask.from_parsing``. ``None``
+    keeps ``DEFAULT_PARSING_LABELS``. A B2 in-M ablation passes a subset
+    for that run only. It does not edit the product default.
     """
     np = require_numpy()
     grid = np.asarray(labels)
     if grid.ndim == 1:
-        mask = SemanticMask.from_parsing(grid)
+        mask = SemanticMask.from_parsing(grid, label_map=label_map)
         return MakeupPgdHook(
             mask,
             epsilon,
@@ -993,7 +1052,10 @@ def dc_hook_from_parsing(
         raise ValueError(
             f"parsing labels must have shape (N,) or (H, W), got {grid.shape}"
         )
-    image = np.asarray(SemanticMask.from_parsing(grid).union(), dtype=np.float64)
+    image = np.asarray(
+        SemanticMask.from_parsing(grid, label_map=label_map).union(),
+        dtype=np.float64,
+    )
     chosen_radius = b0a_camera_radius() if radius is None else float(radius)
     chosen_fovy = FRONTAL_FOVY_DEG if fovy_deg is None else float(fovy_deg)
     camera = {

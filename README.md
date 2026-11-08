@@ -282,6 +282,37 @@ python src/baselines/b2_makeup_impersonation.py
 - `--launch` 必须和 `--arm-hook` 一起用。缺照片、缺 `parsing/306.npy`、缺 306 头像或 CUDA 时不启动。
 - `--parsing` 如果落在 `masks/` 下，或文件名不是 `306.npy`，会被拒绝。
 - `--adaptive-epsilon` 和 `--select-regions` 会被拒绝。前者不是这条 Foolbox 路径，后者是 FLAME 区域，不是 `from_parsing`。
+- `--ablate`（同 `--mask-labels`）：这次运行的 in-M 消融。默认 `full`（省略，或写 `default`）仍用 `DEFAULT_PARSING_LABELS`。导师锁定的模式只有 `ablate_noskin`：去掉标签 1。这不改变妆容 M 的定义。
+
+### in-M 消融（不改变妆容定义）
+
+`makeup/mask.py` 的 `DEFAULT_PARSING_LABELS` 仍是产品默认 M：1（skin/cheek）、2/3（brow）、4/5（eye）、12/13（lip）。鼻子、头发、耳朵、脖子不进入这个默认。消融只在这一次 B2 里把 `label_map` 交给 `from_parsing`，不改那个常量，也不把结果写进 `results/b2_celeba_T0/`。
+
+`--arm-hook` 在绑定了 FLAME 的 306 ply 上还不是高斯 mask。武装状态是 `dc_mask_lift=pending-get-xyz`，`mask_shape` 是图像 `(H, W)`。B2-a/b 记到的是 `[540, 960]`，图像域 M 大约占 10.22% 像素。`(N,)` 要等 launch 时 `get_xyz` 可用，`ensure_dc_mask` 才调用 `sample_image_mask`。那一步才把 `dc_mask_lift` 写成 `projected-means`，并打一行 `mask (N,) nz=… frac=…`。这行和同样的 `dc_mask_shape` / `dc_mask_nonzero` / `dc_mask_fraction` 会进 summary JSON。不要把武装状态说成已经是 `projected-means`，也不要用更早的 smoke 打印代替这次的 `(N,)` 计数。
+
+| 模式 | 标签 | 摘要目录 |
+| --- | --- | --- |
+| `full`（默认，可省略；`default` 同义） | 上面的默认全集 | `results/b2_celeba_T0/` |
+| `ablate_noskin` | 去掉 1，只留 {2, 3, 4, 5, 12, 13} | `results/b2_celeba_T0_ablate_noskin/` |
+
+LFW 后一刀对应 `results/b2_lfw_T0_ablate_noskin/`。默认命令仍然不加 `--launch`。
+
+无 GPU 的消融接线（只写摘要，不装钩子，不开 GPU）：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py --ablate ablate_noskin
+```
+
+清单放行之后才加 `--arm-hook --launch`。摘要进 `results/b2_celeba_T0_ablate_noskin/`，不覆盖 `results/b2_celeba_T0/`：
+
+```bash
+python src/baselines/b2_makeup_impersonation.py \
+  --impersonation-image /root/autodl-fs/gs-assets/targets/celeba_T0.jpg \
+  --parsing /root/autodl-fs/gs-assets/parsing/306.npy \
+  --ablate ablate_noskin \
+  --arm-hook \
+  --launch
+```
 
 真正开 GPU 之前仍要过 `docs/gpu_launch_checklist.md`。在仓库根目录执行。脚本进入 `third_party/AEGIS` 并用 `uv run`，与 B1 同一环境：
 
@@ -314,7 +345,7 @@ python src/baselines/tests/test_b2_makeup_impersonation.py
 |----|------|
 | B0 | AEGIS 原文去身份复现（正式主体 NeRSemble 306；B0-b / FaceScape 527 已取消） |
 | B1 | 同接口改定向冒充（全脸，CelebA/LFW 静止照片，无妆容 mask；第一刀 celeba_T0.jpg） |
-| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；默认不 `--launch` |
+| B2 | B1 + 妆容 mask \(M\)（`kind=dc`，`parsing/306.npy`）+ 幅度约束；摘要 `results/b2_<T>/`；in-M 消融 `ablate_noskin` 写 `results/b2_<T>_ablate_noskin/`，不改默认 M；默认不 `--launch` |
 | M  | + DPA + 预处理不变（主方法） |
 | A1/A2/A3 | 消融 DPA / 预处理 / univ |
 | C1 | 中期最优管线 |
